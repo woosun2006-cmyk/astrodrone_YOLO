@@ -7,7 +7,7 @@ def connect(address):
     print(f"연결됨. system = {master.target_system}")
     return master
 
-def set_drone_mode(mode):
+def set_mode(mode):
     if mode not in master.mode_mapping():
         print(f"지원하지 않는 모드입니다: {mode}")
         return False
