@@ -2,24 +2,45 @@ import time
 import keyboard
 from drone_lib import connect, set_mode, arm_disarm, takeoff, send_velocity, land
 
-def main():
-    connection_address = "tcp:127.0.0.1:5762"
+connection_address = "tcp:127.0.0.1:5762"
+target_alt = 5.0
 
-    print("픽스호크 시뮬레이터 연결 중...")
-    connect(connection_address)
+print("픽스호크 시뮬레이터 연결 중...")
+connect(connection_address)
 
-    print("1. GUIDED 모드로 변경...")
+def change_mode():
+    print("1. 모드 변경 확인")
+
+    print("GUIDED 모드로 변경...")
     set_mode("GUIDED")
-    time.sleep(1)
-
-    print("2. 시동(ARM) 명령...")
-    arm_disarm(True)
-    time.sleep(2)
-
-    print("3. 이륙(Takeoff) - 고도 3m...")
-    takeoff(3.0)
     time.sleep(5)
 
+    print("AUTO 모드로 변경...")
+    set_mode("AUTO")
+    time.sleep(5)
+
+    print("LAND 모드로 변경...")
+    set_mode("LAND")
+    time.sleep(5)
+
+
+def try_arm():
+    print("2. 시동 확인")
+
+    print("시동 켜기...")
+    arm_disarm(True)
+    time.sleep(5)
+
+    print("시동 끄기...")
+    arm_disarm(False)
+    time.sleep(5)
+
+def take_off():
+    print(f"3. 이륙(Takeoff) - 고도 {target_alt}m...")
+    takeoff(target_alt)
+    time.sleep(5)
+
+def control_drone():
     print("\n=== 키보드 조종 시작 ===")
     print("[W/S] : 전진 / 후진")
     print("[A/D] : 좌 / 우 이동")
@@ -62,5 +83,9 @@ def main():
         send_velocity(vx, vy, vz, yaw)
         time.sleep(0.1)
 
-if __name__ == "__main__":
-    main()
+set_mode("GUIDED")
+time.sleep(3)
+arm_disarm(True)
+time.sleep(3)
+take_off()
+control_drone()
