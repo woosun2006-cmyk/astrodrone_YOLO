@@ -1,5 +1,8 @@
 import time
-import keyboard
+import select
+import sys
+import termios
+import tty
 from drone_lib import connect, set_mode, arm_disarm, takeoff, send_velocity, land
 
 connection_address = "tcp:127.0.0.1:5762"
@@ -44,44 +47,59 @@ def control_drone():
     print("\n=== 키보드 조종 시작 ===")
     print("[W/S] : 전진 / 후진")
     print("[A/D] : 좌 / 우 이동")
-    print("[Space] : 상승 | [Shift] : 하강")
+    print("[Space] : 상승 | [X] : 하강")
     print("[Q/E] : 좌회전 / 우회전")
     print("[L] : 착륙 후 종료")
     print("========================\n")
 
     speed = 1.5
     yaw_speed = 0.5
+    command_hold_sec = 0.35
+    last_command_time = 0.0
+    last_command = (0.0, 0.0, 0.0, 0.0)
+    settings = termios.tcgetattr(sys.stdin)
 
-    while True:
-        vx, vy, vz, yaw = 0.0, 0.0, 0.0, 0.0
+    try:
+        tty.setcbreak(sys.stdin.fileno())
+        while True:
+            now = time.time()
+            vx, vy, vz, yaw = 0.0, 0.0, 0.0, 0.0
 
-        if keyboard.is_pressed('w'):
-            vx = speed
-        elif keyboard.is_pressed('s'):
-            vx = -speed
+            readable, _, _ = select.select([sys.stdin], [], [], 0.05)
+            if readable:
+                key = sys.stdin.read(1).lower()
 
-        if keyboard.is_pressed('d'):
-            vy = speed
-        elif keyboard.is_pressed('a'):
-            vy = -speed
+                if key == 'w':
+                    vx = speed
+                elif key == 's':
+                    vx = -speed
+                elif key == 'd':
+                    vy = speed
+                elif key == 'a':
+                    vy = -speed
+                elif key == ' ':
+                    vz = -speed
+                elif key == 'x':
+                    vz = speed
+                elif key == 'q':
+                    yaw = -yaw_speed
+                elif key == 'e':
+                    yaw = yaw_speed
+                elif key == 'l':
+                    print("착륙 명령 수신. 조종을 종료합니다.")
+                    land()
+                    break
 
-        if keyboard.is_pressed('space'):
-            vz = -speed
-        elif keyboard.is_pressed('shift'):
-            vz = speed
+                last_command = (vx, vy, vz, yaw)
+                last_command_time = now
+            elif now - last_command_time <= command_hold_sec:
+                vx, vy, vz, yaw = last_command
 
-        if keyboard.is_pressed('q'):
-            yaw = -yaw_speed
-        elif keyboard.is_pressed('e'):
-            yaw = yaw_speed
-
-        if keyboard.is_pressed('l'):
-            print("착륙 명령 수신. 조종을 종료합니다.")
-            land()
-            break
-
-        send_velocity(vx, vy, vz, yaw)
-        time.sleep(0.1)
+            send_velocity(vx, vy, vz, yaw)
+            time.sleep(0.05)
+    finally:
+        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
+        send_velocity(0.0, 0.0, 0.0, 0.0)
 
 set_mode("GUIDED")
 time.sleep(3)
