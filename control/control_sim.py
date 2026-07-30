@@ -3,9 +3,10 @@ import select
 import sys
 import termios
 import tty
-from drone_lib import connect, set_mode, arm_disarm, takeoff, send_velocity, land
+from drone_lib import connect, set_mode, arm_disarm, takeoff, send_velocity, land, load_mavlink_settings
 
-connection_address = "tcp:127.0.0.1:5762"
+settings = load_mavlink_settings()
+connection_address = settings["sitl"]["local_tcp"]["address"]
 target_alt = 5.0
 
 print("픽스호크 시뮬레이터 연결 중...")

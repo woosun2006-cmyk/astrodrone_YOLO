@@ -1,8 +1,9 @@
 from pymavlink import mavutil
-from drone_lib import connect, set_mode, arm_disarm, takeoff, land
+from drone_lib import connect, set_mode, arm_disarm, takeoff, land, load_mavlink_settings
 import time
 
-connect('udp:127.0.0.1:14550')
+settings = load_mavlink_settings()
+connect(settings["real"]["proxy_udp"]["address"])
 target_alt = 10
 
 set_mode('GUIDED')

@@ -3,6 +3,7 @@ import time
 
 from pymavlink import mavutil
 
+from drone_lib import load_mavlink_settings
 
 ARM_FLAG = mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED
 ARM_COMMAND = mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM
@@ -123,7 +124,8 @@ def wait_arm_result(master, expected_armed, timeout):
 
 def main():
     parser = argparse.ArgumentParser(description="MAVLink ARM/DISARM test")
-    parser.add_argument("--address", default="tcp:127.0.0.1:5762")
+    settings = load_mavlink_settings()
+    parser.add_argument("--address", default=settings["sitl"]["local_tcp"]["address"])
     parser.add_argument("--heartbeat-timeout", type=float, default=20)
     parser.add_argument("--mode", default="GUIDED")
     parser.add_argument("--no-mode", action="store_true")

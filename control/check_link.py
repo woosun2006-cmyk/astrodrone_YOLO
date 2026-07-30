@@ -3,6 +3,7 @@ import time
 
 from pymavlink import mavutil
 
+from drone_lib import load_mavlink_settings
 
 ARM_FLAG = mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED
 
@@ -15,8 +16,10 @@ def main():
     parser = argparse.ArgumentParser(
         description="Read-only MAVLink link/status check. Sends no arm or motor commands."
     )
-    parser.add_argument("--address", default="/dev/ttyACM0")
-    parser.add_argument("--baud", type=int, default=115200)
+    settings = load_mavlink_settings()
+    real_serial = settings["real"]["serial"]
+    parser.add_argument("--address", default=real_serial["address"])
+    parser.add_argument("--baud", type=int, default=real_serial["baud"])
     parser.add_argument("--heartbeat-timeout", type=float, default=20)
     parser.add_argument("--listen", type=float, default=8)
     args = parser.parse_args()

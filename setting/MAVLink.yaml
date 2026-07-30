@@ -1,0 +1,25 @@
+# MAVLink 연결 주소 모음.
+# control/*.py 는 여기서 주소를 읽어오고, 필요하면 --address 로 덮어씀.
+#
+# 실비행은 UDP, SITL은 TCP가 기본.
+#   real.serial     : 젯슨 <-> 픽스호크 USB 직결. mavproxy 없이 단독 점검할 때 사용 (check_link.py)
+#   real.proxy_udp  : mavproxy가 serial 픽스호크를 UDP로 중계한 주소.
+#                     여러 프로그램이 동시에 붙을 수 있어 실비행 스크립트(control.py)는 이걸 기본으로 씀.
+#   sitl.local_tcp  : 젯슨에서 직접 띄운 SITL(sim_vehicle.py)의 기본 TCP 출력. (control_sim.py, test_arm.py)
+#   sitl.remote_udp : 다른 PC의 Mission Planner SITL에서 UDP로 젯슨까지 전달할 때 받는 주소.
+
+real:
+  serial:
+    address: /dev/ttyACM0
+    baud: 115200
+  proxy_udp:
+    address: udp:127.0.0.1:14550
+
+sitl:
+  local_tcp:
+    address: tcp:127.0.0.1:5762
+  remote_udp:
+    address: udp:0.0.0.0:14561
+    note: Mission Planner SITL 에서 젯슨(192.168.0.196:14561)으로 MAVLink UDP 출력 추가
+
+heartbeat_timeout: 20

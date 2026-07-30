@@ -3,8 +3,8 @@
 
 Start it once and leave it running. Open the printed URL: the video and the
 fps chart are always live. Type how many seconds you want to measure, press
-Record, move the camera around, and it writes a plain-text report next to
-this script when the timer runs out.
+Record, move the camera around, and it writes a plain-text report into this
+script's log/ subdirectory when the timer runs out.
 
 Exposure is tracked alongside fps because auto-exposure is what usually drags
 the frame rate down: a dark scene needs a longer shutter, and the shutter puts
@@ -34,7 +34,7 @@ LIVE_WINDOW_SEC = 40       # how much history the idle chart shows
 LOG_PREFIX = "fps_log"     # saved as <prefix>_MMDD_HHMM.txt
                            # e.g. fps_log_0721_2051.txt = Jul 21, 20:51
 
-PORT = 8000
+PORT = 8001
 
 # Jetson Nano + IMX219, captured via nvarguscamerasrc (libargus), not rpicam-vid.
 # IMX219 sensor modes on this board (from GST_ARGUS mode enum):
@@ -243,7 +243,9 @@ def finish_locked():
     if not rows:
         return
     name = f"{LOG_PREFIX}_{time.strftime('%m%d_%H%M')}.txt"
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
+    log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "log")
+    os.makedirs(log_dir, exist_ok=True)
+    path = os.path.join(log_dir, name)
     frames = 0
     try:
         frames = rows[-1]["frames_total"] - rows[0]["frames_total"]

@@ -33,8 +33,8 @@ LIVE_WINDOW_SEC = 40       # how much history the idle chart shows
 
 LOG_PREFIX = "yolo_log"    # saved as <prefix>_MMDD_HHMM.txt
 
-PORT = 8001                # fpslog.py uses 8000; different port so both
-                            # can run at once
+PORT = 8002                # camserver.py uses 8000, fpslog.py uses 8001;
+                            # different port so all three can run at once
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WEIGHTS = os.path.join(HERE, "prototype.pt")
@@ -272,7 +272,9 @@ def finish_locked():
     if not rows:
         return
     name = f"{LOG_PREFIX}_{time.strftime('%m%d_%H%M')}.txt"
-    path = os.path.join(HERE, name)
+    log_dir = os.path.join(HERE, "log")
+    os.makedirs(log_dir, exist_ok=True)
+    path = os.path.join(log_dir, name)
     text = report(rows, started_str, duration)
     with open(path, "w") as f:
         f.write(text + "\n")

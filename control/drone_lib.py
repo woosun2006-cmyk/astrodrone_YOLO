@@ -1,7 +1,17 @@
 from pymavlink import mavutil
+import os
 import time
+import yaml
 
 master = None
+
+SETTING_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "setting")
+MAVLINK_SETTINGS_PATH = os.path.join(SETTING_DIR, "MAVLink.yaml")
+
+
+def load_mavlink_settings():
+    with open(MAVLINK_SETTINGS_PATH, encoding="utf-8") as f:
+        return yaml.safe_load(f)
 
 def connect(address, heartbeat_timeout=20):
     global master
