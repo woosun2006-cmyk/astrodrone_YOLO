@@ -1,8 +1,11 @@
 ## 하드웨어 장비
  - board :  NVIDIA Jetson Nano Developer Kit (ram : 4Gb)
+ - mcu : pixhawk 4 mini
  - camera : IMX219
 	장치 node : /dev/video0
 	센서 최대 스펙: 3264x2464 @21fps 등 (RG10 raw bayer)까지 지원
+ - gps : pixhawk 내장 gps module
+ - 수신기 : ... -> pixhawk - telem1
 
 ## Setting
 ~/astro-drone/setting 폴더 안에서 포트, 연결 서버 값 고정
@@ -10,8 +13,13 @@
 ### safety
 
 ### port
+- for open server in jetson, the server port number is recorded in here.
+- it's open in only wifi-ASTRO5G
 
 ### MAVLink
+- it's for mavlink port number setting.
+- it's different for SITL/pixhawk.
+- one port can connect one device.
 
 ---
 
