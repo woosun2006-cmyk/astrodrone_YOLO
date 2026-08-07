@@ -1,0 +1,45 @@
+# IMX219 capture settings for the test_cam scripts.
+# wbmode 3 (fluorescent) is a stopgap for this module's red-tint bug
+# (default AWB measured R/G ~1.36; wbmode 3 gets R/G ~1.27, B/G ~1.00) -
+# the real fix is installing camera_overrides.isp system-wide (needs root),
+# or - if this module turns out to have no IR-cut filter - a physical filter.
+#
+# quality 25 targets a 4-8Mbps bitrate band, measured on this camera at
+# 1280x720@30fps (quality 15 ~5.6Mbps, 25 ~6.8Mbps, 40 ~8.2Mbps).
+
+# Per-channel gain applied after capture (multiplier, 1.0 = unchanged) to
+# further flatten the residual tint. Tune live with fpslog.py's r/g/b
+# sliders and hit Save there - it rewrites just these three numbers here.
+# camserver.py and yolo_live.py both read this on startup.
+wb_correction:
+  red_gain: 0.797
+  green_gain: 1.070
+  blue_gain: 0.992
+
+# Coordinate convention for YOLO detection output (drone-control frame, not
+# pixel frame). Origin (0,0) is the center of the frame, not the top-left
+# corner. +x is right, +y is UP (math/drone convention, not image-down).
+# Any code turning a detection's pixel center (px, py) into this frame must
+# use that frame's own width/height (e.g. camserver's or yolo_live.py's
+# WIDTH/HEIGHT), since this file defines no single resolution:
+#   x = px - width / 2
+#   y = height / 2 - py
+coord_origin: center
+
+camserver:               # test_cam/camserver.py
+  sensor_id: 0
+  width: 1280
+  height: 720
+  fps: 30
+  quality: 25
+  wbmode: 3
+
+fpslog:                  # test_cam/fpslog.py
+  sensor_id: 0
+  sensor_mode: 4          # GST_ARGUS mode index, must match width/height/fps exactly
+  width: 1280
+  height: 720
+  fps: 60
+  fixed_shutter_us: 0     # 0 = auto exposure
+  wbmode: 3
+  quality: 25

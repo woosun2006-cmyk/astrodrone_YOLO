@@ -15,6 +15,7 @@ add_library(drone_lib STATIC
     drone_lib.cpp
     mav_transport.cpp
     yaml_settings.cpp
+    target_link.cpp
 )
 target_include_directories(drone_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
@@ -37,3 +38,6 @@ target_link_libraries(test_arm PRIVATE drone_lib Threads::Threads)
 
 add_executable(check_alt check_alt.cpp)
 target_link_libraries(check_alt PRIVATE drone_lib Threads::Threads)
+
+add_executable(target_distance target_distance.cpp)
+target_link_libraries(target_distance PRIVATE drone_lib Threads::Threads)

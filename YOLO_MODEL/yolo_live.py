@@ -9,9 +9,12 @@ tuned offline ("실사용 임계값은 웹캠 스트리밍으로 직접 찾을 �
 tool. Type how many seconds you want to measure, press Record, and it
 writes a plain-text report next to this script when the timer runs out.
 """
+import os
+
+os.environ.setdefault("OPENBLAS_CORETYPE", "ARMV8")
+
 import http.server
 import json
-import os
 import socket
 import socketserver
 import statistics
@@ -23,6 +26,14 @@ import warnings
 from collections import deque
 
 import cv2
+import numpy as np
+import yaml
+
+SETTING_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "setting")
+CAM_SETTINGS_PATH = os.path.join(SETTING_DIR, "cam_sets.yaml")
+
+with open(CAM_SETTINGS_PATH, encoding="utf-8") as f:
+    _wb_correction = yaml.safe_load(f)["wb_correction"]
 
 # ---------------------------------------------------------------------------
 # SETTINGS - edit these
@@ -56,13 +67,35 @@ HALF = False         # info.txt: FP16 collapsed accuracy on the dev GTX 1660
 # matches the one already proven working in ~/yolo-jetson/run_yolov5n.sh.
 SENSOR_ID = 0
 WIDTH, HEIGHT, CAM_FPS = 640, 480, 30
+
+# This IMX219 module's default AWB leaves a strong red cast (measured
+# R/G ~1.36 with AWB off/auto). wbmode=3 (fluorescent), same as
+# test_cam/camserver.py and fpslog.py, was closest to neutral out of the
+# presets tried.
+WBMODE = 3
 # ---------------------------------------------------------------------------
+
+# Extra per-channel gain on top of wbmode, tuned live with fpslog.py's r/g/b
+# sliders and saved from there - see setting/cam_sets.yaml's wb_correction.
+WB_GAINS_BGR = (_wb_correction["blue_gain"], _wb_correction["green_gain"],
+                _wb_correction["red_gain"])
+
+
+def apply_wb_correction(frame):
+    if WB_GAINS_BGR == (1.0, 1.0, 1.0):
+        return frame
+    out = frame.astype(np.float32)
+    for i, gain in enumerate(WB_GAINS_BGR):
+        if gain != 1.0:
+            out[:, :, i] *= gain
+    return np.clip(out, 0, 255).astype(np.uint8)
 
 model = None  # set once by _load_model(), read by inferer()
 
 state = {"raw_frame": None, "cap_times": deque(maxlen=30), "cap_count": 0,
          "frame": None, "infer_times": deque(maxlen=30), "last_dets": [],
-         "last_latency_ms": 0.0, "cap": None}
+         "last_latency_ms": 0.0, "cap": None,
+         "target": {"found": False, "t": 0.0}}
 cap_cond = threading.Condition()
 frame_cond = threading.Condition()
 stopping = threading.Event()
@@ -81,7 +114,7 @@ rec_lock = threading.Lock()
 def grabber():
     """Feeds raw BGR frames from nvarguscamerasrc into state["raw_frame"]."""
     pipeline = (
-        f"nvarguscamerasrc sensor-id={SENSOR_ID} ! "
+        f"nvarguscamerasrc sensor-id={SENSOR_ID} wbmode={WBMODE} ! "
         f"video/x-raw(memory:NVMM),width={WIDTH},height={HEIGHT},"
         f"format=NV12,framerate={CAM_FPS}/1 ! "
         "nvvidconv flip-method=0 ! "
@@ -98,6 +131,7 @@ def grabber():
             ok, frame = cap.read()
             if not ok:
                 break
+            frame = apply_wb_correction(frame)
             now = time.monotonic()
             with cap_cond:
                 state["raw_frame"] = frame
@@ -144,12 +178,29 @@ def inferer():
         dets = [{"name": row["name"], "conf": round(float(row["confidence"]), 3)}
                 for _, row in df.iterrows()]
 
+        # Highest-confidence detection's box center, converted to the
+        # center-origin frame from ../setting/cam_sets.yaml (coord_origin:
+        # center; +x right, +y up) - this is what target_distance.cpp polls
+        # over /target to compute the target's offset from the camera axis.
+        if not df.empty:
+            top = df.loc[df["confidence"].idxmax()]
+            px = float(top["xmin"] + top["xmax"]) / 2.0
+            py = float(top["ymin"] + top["ymax"]) / 2.0
+            target = {"found": True, "name": str(top["name"]),
+                      "conf": round(float(top["confidence"]), 3),
+                      "x_px": round(px - WIDTH / 2.0, 1),
+                      "y_px": round(HEIGHT / 2.0 - py, 1)}
+        else:
+            target = {"found": False}
+
         now = time.monotonic()
         with frame_cond:
             state["frame"] = jpg.tobytes()
             state["infer_times"].append(now)
             state["last_dets"] = dets
             state["last_latency_ms"] = round(latency_ms, 1)
+            target["t"] = now
+            state["target"] = target
             frame_cond.notify_all()
 
 
@@ -598,6 +649,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         if path == "/data":
             return self._json(self._data())
+
+        if path == "/target":
+            with frame_cond:
+                t = dict(state["target"])
+            age_s = time.monotonic() - t["t"] if t.get("t") else None
+            t["age_ms"] = round(age_s * 1000, 1) if age_s is not None else None
+            t["width"], t["height"] = WIDTH, HEIGHT
+            return self._json(t)
 
         if path == "/stream":
             return self.stream()

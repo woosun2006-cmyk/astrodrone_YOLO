@@ -1,13 +1,3 @@
-# MAVLink 연결 주소 모음.
-# control/*.py 는 여기서 주소를 읽어오고, 필요하면 --address 로 덮어씀.
-#
-# 실비행은 UDP, SITL은 TCP가 기본.
-#   real.serial     : 젯슨 <-> 픽스호크 USB 직결. mavproxy 없이 단독 점검할 때 사용 (check_link.py)
-#   real.proxy_udp  : mavproxy가 serial 픽스호크를 UDP로 중계한 주소.
-#                     여러 프로그램이 동시에 붙을 수 있어 실비행 스크립트(control.py)는 이걸 기본으로 씀.
-#   sitl.local_tcp  : 젯슨에서 직접 띄운 SITL(sim_vehicle.py)의 기본 TCP 출력. (control_sim.py, test_arm.py)
-#   sitl.remote_udp : 다른 PC의 Mission Planner SITL에서 UDP로 젯슨까지 전달할 때 받는 주소.
-
 real:
   serial:
     address: /dev/ttyACM0
@@ -23,3 +13,32 @@ sitl:
     note: Mission Planner SITL 에서 젯슨(192.168.0.196:14561)으로 MAVLink UDP 출력 추가
 
 heartbeat_timeout: 20
+
+# Target-approach guidance: target_distance.cpp computes a range to the
+# YOLO-detected target and publishes it over loopback UDP; control.cpp
+# consumes it and flies toward the target. See target_distance.cpp and
+# control.cpp for how each value is used.
+target_track:
+  yolo_host: 127.0.0.1
+  yolo_port: 8002          # must match setting/cam_sets.yaml's yolo_live port
+  udp_port: 15020          # loopback link: target_distance.cpp -> control.cpp
+  # Placeholder gain (m of real-world offset per pixel of image offset),
+  # used to combine the target's pixel offset with altitude via Pythagoras.
+  # NOT derived from a measured camera FOV/focal length (none on file) -
+  # calibrate against a real target at a known distance/altitude before
+  # trusting the computed range for actual flight.
+  pixel_to_meter: 0.01
+  target_stale_ms: 400     # ignore a YOLO detection older than this
+  link_stale_ms: 500       # control.cpp hovers if no UDP packet this recent
+  max_forward_speed: 0.5   # m/s cap, control.cpp's approach velocity
+  max_lateral_speed: 0.5   # m/s cap, control.cpp's centering velocity
+  stop_distance: 2.0       # m; forward speed -> 0 once inside this range
+  approach_duration_sec: 60  # control.cpp lands automatically after this long
+  # 1.range calc -> 2.velocity calc -> 3.send-to-Pixhawk cycle period. Set to
+  # 20Hz for a smoother GUIDED velocity stream than the underlying data
+  # needs: YOLO_MODEL/yolo_live.py's own comments put YOLOv5n inference at
+  # IMG_SIZE=320 around ~10 fps on this Jetson Nano, so roughly every other
+  # 50ms tick re-sends the same target reading rather than a fresher one -
+  # that's fine (ArduPilot expects a steady setpoint stream and a repeated
+  # value is a valid one), but don't expect this alone to sharpen tracking.
+  cycle_ms: 50

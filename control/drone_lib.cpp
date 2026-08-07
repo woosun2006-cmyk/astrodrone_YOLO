@@ -156,6 +156,18 @@ void send_velocity(double vx, double vy, double vz, double yaw_rate) {
     vehicle.send(msg);
 }
 
+void send_velocity_body(double vx, double vy, double vz, double yaw_rate) {
+    MavConnection& vehicle = require_connection();
+    mavlink_message_t msg;
+    const uint16_t type_mask = 0b0000111111000111;
+    mavlink_msg_set_position_target_local_ned_pack(
+        kSourceSystem, kSourceComponent, &msg, 0, vehicle.target_system(),
+        vehicle.target_component(), MAV_FRAME_BODY_OFFSET_NED, type_mask, 0, 0, 0,
+        static_cast<float>(vx), static_cast<float>(vy), static_cast<float>(vz), 0, 0, 0, 0,
+        static_cast<float>(yaw_rate));
+    vehicle.send(msg);
+}
+
 void land() {
     MavConnection& vehicle = require_connection();
     mavlink_message_t msg;

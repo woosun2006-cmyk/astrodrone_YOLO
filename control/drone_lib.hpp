@@ -65,6 +65,12 @@ bool set_mode(const std::string& mode);
 void arm_disarm(bool arm);
 void takeoff(double altitude);
 void send_velocity(double vx, double vy, double vz, double yaw_rate = 0.0);
+// Same as send_velocity(), but in MAV_FRAME_BODY_OFFSET_NED: vx/vy/vz are
+// forward/right/down relative to the vehicle's current heading instead of
+// north/east/down. Use this for camera-relative guidance (e.g.
+// target_distance.cpp's pixel offsets), since send_velocity()'s world-frame
+// axes only line up with "forward" when the vehicle happens to face north.
+void send_velocity_body(double vx, double vy, double vz, double yaw_rate = 0.0);
 void land();
 
 }  // namespace drone
