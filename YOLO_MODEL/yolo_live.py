@@ -61,6 +61,15 @@ HALF = False         # info.txt: FP16 collapsed accuracy on the dev GTX 1660
                      # SUPER (mAP50 0.995 -> 0.659). Unverified on this
                      # Jetson's GPU - leave False until checked.
 
+# /target's age_ms only tells a consumer how *recent* a detection is, not
+# how *stable* it is - a single-frame misdetection is just as "fresh" as a
+# real target. TARGET_CONFIRM_FRAMES requires this many consecutive
+# inference passes to agree (found=True, same class) before /target reports
+# confirmed=True; consumers like control/target_distance.cpp should treat
+# confirmed=False the same as found=False. Placeholder value - tune against
+# this model's actual false-positive rate.
+TARGET_CONFIRM_FRAMES = 5
+
 # Jetson Nano + IMX219 via nvarguscamerasrc, same camera fpslog.py uses, but
 # through OpenCV/GStreamer (appsink) instead of a raw fdsink pipe, since we
 # need numpy frames for the model rather than a JPEG byte stream. Pipeline
@@ -95,7 +104,8 @@ model = None  # set once by _load_model(), read by inferer()
 state = {"raw_frame": None, "cap_times": deque(maxlen=30), "cap_count": 0,
          "frame": None, "infer_times": deque(maxlen=30), "last_dets": [],
          "last_latency_ms": 0.0, "cap": None,
-         "target": {"found": False, "t": 0.0}}
+         "target": {"found": False, "confirmed": False, "t": 0.0},
+         "target_streak": deque(maxlen=TARGET_CONFIRM_FRAMES)}
 cap_cond = threading.Condition()
 frame_cond = threading.Condition()
 stopping = threading.Event()
@@ -182,16 +192,20 @@ def inferer():
         # center-origin frame from ../setting/cam_sets.yaml (coord_origin:
         # center; +x right, +y up) - this is what target_distance.cpp polls
         # over /target to compute the target's offset from the camera axis.
+        multi = len(df) > 1
         if not df.empty:
             top = df.loc[df["confidence"].idxmax()]
             px = float(top["xmin"] + top["xmax"]) / 2.0
             py = float(top["ymin"] + top["ymax"]) / 2.0
-            target = {"found": True, "name": str(top["name"]),
+            top_name = str(top["name"])
+            target = {"found": True, "name": top_name,
                       "conf": round(float(top["confidence"]), 3),
                       "x_px": round(px - WIDTH / 2.0, 1),
-                      "y_px": round(HEIGHT / 2.0 - py, 1)}
+                      "y_px": round(HEIGHT / 2.0 - py, 1),
+                      "detections": len(df), "multi": multi}
         else:
-            target = {"found": False}
+            top_name = None
+            target = {"found": False, "detections": 0, "multi": False}
 
         now = time.monotonic()
         with frame_cond:
@@ -199,6 +213,22 @@ def inferer():
             state["infer_times"].append(now)
             state["last_dets"] = dets
             state["last_latency_ms"] = round(latency_ms, 1)
+
+            # None breaks the streak the same way a missing detection or a
+            # class change does. A multi-detection frame also counts as
+            # None for streak purposes: with two+ boxes in frame we can't
+            # tell if the top-confidence one is the same physical target
+            # frame-to-frame (could be swapping between look-alikes), so it
+            # can't be allowed to confirm a streak even though something
+            # was technically found.
+            streak = state["target_streak"]
+            streak.append(None if multi else top_name)
+            target["confirmed"] = (
+                not multi
+                and top_name is not None
+                and len(streak) == TARGET_CONFIRM_FRAMES
+                and all(n == top_name for n in streak)
+            )
             target["t"] = now
             state["target"] = target
             frame_cond.notify_all()

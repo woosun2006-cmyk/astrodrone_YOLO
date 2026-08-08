@@ -29,3 +29,7 @@ YamlValue parse_yaml_file(const std::string& path);
 // Resolves to <repo_root>/setting/MAVLink.yaml and parses it, mirroring
 // drone_lib.py's load_mavlink_settings().
 YamlValue load_mavlink_settings();
+
+// Resolves to <repo_root>/setting/safety.yaml and parses it (altitude
+// limits, etc.) -- same executable-relative lookup as load_mavlink_settings().
+YamlValue load_safety_settings();

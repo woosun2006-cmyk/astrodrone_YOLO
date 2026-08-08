@@ -88,6 +88,8 @@ std::unique_ptr<MavConnection> g_master;
 
 YamlValue load_mavlink_settings() { return ::load_mavlink_settings(); }
 
+YamlValue load_safety_settings() { return ::load_safety_settings(); }
+
 MavConnection& connect(const std::string& address, double heartbeat_timeout) {
     g_master = open_connection(address);
     std::cout << "MAVLink heartbeat 대기 중: " << address << " (" << heartbeat_timeout

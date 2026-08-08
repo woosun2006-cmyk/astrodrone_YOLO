@@ -147,6 +147,135 @@
   `tracking=false` 경로(속도 0, 호버)로 자연스럽게 넘어가긴 하지만
   "확인된 재탐지"를 복귀 조건 자체에 넣는 건 아님.
 
+### 9. control.cpp / emergency.cpp 재설계 - emergency.cpp를 자동 대응 경로에서 제외 (완료)
+8번에서 만든 `emergency.cpp -> UDP -> control.cpp` 구조를 다시 걷어냄.
+요청에 따라 "명령을 보내는 건 control.cpp 하나뿐"으로 더 단순화:
+
+- **`control/emergency_link.hpp`/`.cpp` 삭제.** `setting/safety.yaml`의
+  `emergency_link.udp_port` 섹션도 제거. `CMakeLists.txt`에서
+  `emergency_link.cpp` 등록 해제.
+- **`control.cpp`**: battery/heartbeat/gps/vehicle_health 감시 로직을
+  `emergency.cpp`에서 그대로 가져와 직접 흡수. `drone::require_connection()`
+  으로 커넥션을 얻어 `SYS_STATUS`/`GPS_RAW_INT` 구독 요청을 자체적으로
+  보내고, 매 사이클(`kHealthPollTimeoutSec = 0.005s`, 기존 20Hz 사이클을
+  거의 방해하지 않는 짧은 논블로킹성 폴링) `HEARTBEAT`까지 같이
+  `recv_match`로 확인. 위반 시 LOITER 전환 + 최소 3초 유지 로직은 그대로
+  유지, 다만 신호를 UDP로 받는 대신 자체 계산.
+- **`emergency.cpp`**: 순수 읽기 전용 진단 도구로 축소 - `check_alt.cpp`
+  와 동일한 포지션. `EmergencySender`/UDP 송신 전부 제거, MAVLink 명령도
+  전혀 안 보냄(`open_connection()`만 사용, `drone::connect()` 아님). 이제
+  자동 안전 대응 경로에는 관여하지 않고, 터미널에서 사람이 직접 상태
+  보는 용도로만 남김 - 파일 상단 주석에 명시.
+- **부수 효과**: 지난 턴에 지적했던 "emergency.cpp가 안 떠 있으면
+  안전장치가 조용히 사라짐" 문제가 이 구조에서는 자동으로 해소됨 -
+  이제 안전 체크가 `control.cpp` 자기 자신 안에 있어서 별도 프로세스의
+  생존 여부에 의존하지 않음.
+- 전체 빌드 확인(경고 없음), `control`/`emergency` 둘 다 `safety.yaml`을
+  경고 없이 읽는 것까지 확인.
+
+### 10. test_arm 안전장치 재정의
+"test_arm"이 의미하는 바를 사용자가 정정: prearm 체크 통과 여부(걸 수
+있는 상태)뿐 아니라 **현재 시동이 걸려있는지 자체**도 포함. `safety.yaml`
+`vehicle_health_limit`에 주석 추가, `control.cpp`/`emergency.cpp` 둘 다
+`HEARTBEAT`에서 `is_armed_from_heartbeat()`로 armed 상태를 읽어 매 사이클
+로그에 출력(`armed=Y/N`). 단, armed 자체는 비행 중 정상 상태라 그것만으론
+위반(breach)으로 판정하지 않음 - 정보 표시 용도. (armed가 "예상과 다르게
+꺼짐"을 위반으로 볼지는 별도 논의 필요 - 미결정.)
+
+### 11. YOLO 다중 타겟 검출 제외 - yolo_live.py에서 처리 (완료)
+어디서 처리할지(`yolo_live.py` vs `emergency.cpp`) 컴퓨팅 리소스 기준으로
+결정: `yolo_live.py`의 `inferer()`는 이미 매 프레임 전체 탐지
+데이터프레임(`df`)을 갖고 있어서 `len(df) > 1` 체크가 사실상 공짜.
+`emergency.cpp`에서 처리하려면 지금 없는 `/target` HTTP 폴링 관계를 새로
+만들어야 해서(→ `target_distance.cpp`가 하는 걸 중복) 오히려 리소스가 더
+듦 - `yolo_live.py` 쪽으로 결정.
+- `state["target"]`에 `"detections"`(개수), `"multi"`(2개 이상 여부)
+  필드 추가.
+- 다중 검출 프레임은 `target_streak`에 실제 이름 대신 `None`을 넣어
+  스트릭을 강제로 끊음 - 검출은 됐어도(`found=true`) `confirmed=true`로
+  올라가지 못하게 막음(비슷한 대상이 여러 개일 때 프레임마다 다른 걸
+  가리킬 수 있어서, 연속성 보장이 안 됨).
+- `python3 -m py_compile` 통과 확인.
+
+### 12. RC 오버라이드(조종기로 제어권 뺏김) 감지 - **논의 필요, 미구현**
+사용자 지적: 지금 긴급상황 목록에 "조종기로 제어권을 뺏겼을 때(RC 인식
+안 될 경우 재시도 안 함)"에 대한 처리가 전혀 없음. 코드는 아직 작성하지
+않음 - 설계가 먼저 필요:
+- 기본 방향(잠정): `control.cpp` 운용 중 픽스호크의 모드가 우리가 명령한
+  적 없는 값으로 바뀐 게 감지되면(`HEARTBEAT.custom_mode`로 감지 가능),
+  자동으로 다시 GUIDED를 잡으려 시도하는("재캐치") 로직은 **아예 두지
+  말고 꺼두자** - 파일럿이 RC로 모드를 바꿨다면 그건 의도적 개입일
+  가능성이 높으므로, 소프트웨어가 자동으로 재장악을 시도하면 오히려
+  위험할 수 있음.
+- 미결정 사항: (a) 이걸 단순 "명령 전송 중단"으로 끝낼지, 아니면 우리
+  쪽에서도 명시적으로 어떤 상태로 전이할지, (b) RC 신호 자체의
+  유실(픽스호크 자체 FS_THR_ENABLE 등 펌웨어 레벨 failsafe와는 별개로,
+  우리 앱이 이걸 알아야 할 이유가 있는지), (c) 이 로직이 들어갈 위치
+  (`control.cpp` 안 vs 별도 감시).
+- 사용자 승인 전까지 코드 변경 없음 - 다음 논의에서 결정.
+
+### 13. astroquad/uav-onboard 참고 조사 - 관련 발견 사항 반영
+`github.com/astroquad`의 `uav-onboard` 레포(`SafetyMonitor.cpp/hpp`,
+`config/safety.toml`, `GridMission.hpp` 상태머신)를 조사해서 다음을
+확인/반영함:
+- `battery low_voltage_v`가 저희와 같은 4S/14.8V 배터리 기준으로 14.0V로
+  설정돼 있음 (14.8은 무부하 공칭값이라 부하 시 바로 걸릴 위험 - 14번
+  항목에서 반영).
+- "operator takeover: mode changed from GUIDED"를 최우선순위(Abort)로
+  처리 - 12번 항목의 RC 오버라이드 논의에 대한 참고 근거.
+- `EmergencyLand`가 별도 프로세스가 아니라 같은 상태머신의 상태 하나 -
+  9번에서 이미 잡은 "control.cpp 하나가 다 처리" 방향과 일치.
+- 타겟/라인 유실 시 짧으면 호버, 길면 LAND로 에스컬레이션 - 저희는 아직
+  무한 호버만 함(추후 논의 대상, 이번엔 미반영).
+- EKF는 실제 `EKF_STATUS_REPORT`의 variance 값(`pos_horiz`, `velocity`
+  각각 임계값 1.0)을 사용 - 14번 항목에서 동일하게 반영.
+
+### 14. 배터리 임계값 하향, heartbeat 유실 시 LAND 에스컬레이션, 실제 EKF 체크, 비행 로그 (완료)
+- **`battery_limit.min_voltage_v`: 14.8 → 그대로 두되(astroquad 근거로
+  14.0 권장 자체는 텍스트로 안내), 실제 반영은 다음 세션 확인 필요** —
+  주의: 이번엔 코드/설정 값 자체는 아직 14.8로 남아있음, 낮추는 걸
+  명시적으로 요청받으면 반영할 것.
+- **heartbeat 5초 이상 유실 시 LOITER 대신 LAND**: `safety.yaml`
+  `heartbeat_limit.land_gap_sec: 5` 추가. `control.cpp`에서 매 사이클
+  `heartbeat_gap`을 계산해 `land_gap_sec` 초과 시 일반 breach(LOITER)
+  경로보다 우선해서 `drone::land()` 전송 후 `approach_target()` 루프
+  종료(더 이상 손 쓸 게 없다고 판단 - 재개 시도 안 함).
+- **EKF 체크를 astroquad 방식대로 실제 구현**: 벤더링된
+  `control/third_party/mavlink`엔 `EKF_STATUS_REPORT`(id 193,
+  ardupilotmega.xml 소속, common.xml엔 없음)가 없었던 문제를, 로컬에
+  설치된 `pymavlink`의 mavgen(C 생성기)으로 ardupilotmega.xml에서 해당
+  메시지 헤더만 정식 생성해서 해결 - CRC_EXTRA/길이 등을 손으로 추측하지
+  않고 authoritative하게 가져옴.
+  - `control/third_party/mavlink/common/mavlink_msg_ekf_status_report.h`
+    추가 (출처 주석 포함), `common.h`에 include 라인 +
+    `MAVLINK_MESSAGE_CRCS` 테이블에 `{193, 71, 22, 26, 0, 0, 0}` 추가 +
+    `MAVLINK_MESSAGE_INFO` 테이블에도 등록.
+  - `safety.yaml`에 `ekf_limit`(`pos_horiz_variance_max`,
+    `velocity_variance_max`, 각 1.0 - astroquad와 동일값, ArduCopter가
+    GUIDED를 받아들이는 실제 기준) 추가.
+  - `control.cpp`/`emergency.cpp` 둘 다 `EKF_STATUS_REPORT` 구독 +
+    변조/판정 로직 추가 (`control.cpp`만 실제 조치, `emergency.cpp`는
+    출력만).
+- **예상치 못한 disarm 시 긴급 LAND** (이전 세션 위험 요소 5번 항목에
+  대한 결정): 비행 중 `armed: true -> false` 전이가 감지되면(이 루프는
+  스스로 disarm하지 않으므로 이 전이는 항상 외부 요인) 즉시
+  `drone::land()`를 best-effort로 보내고 `approach_target()` 루프 종료.
+- **비행 로그 CSV 기록**: `Document/logs/flight_<타임스탬프>.csv`에
+  매 틱 + 주요 이벤트(LOITER 진입/유지/탈출, ALT-LIMIT 시작/복귀,
+  UNEXPECTED_DISARM, HEARTBEAT_LAND_ESCALATION)마다 한 줄씩 기록.
+  타임스탬프, 경과시간, 모드, armed, tracking, 거리, vx/vy/vz, 고도,
+  battery %/V, gps fix/sat, prearm_healthy, system_status,
+  emergency_active/reason, event 컬럼. 매 줄 flush - 비정상 종료 시에도
+  직전 상황이 남도록.
+- **작업 중 이슈**: `control/emergency.cpp`가 이번 세션 중 디스크에서
+  사라져 있는 걸 빌드 중 발견함 (git엔 마지막 커밋 기준 빈 파일로 존재,
+  작업 트리에서만 없어짐 - 원인 불명, 제가 의도적으로 지운 적 없음).
+  마지막으로 작성했던 내용(순수 읽기전용 진단 도구 버전)대로 다시
+  작성해서 복구, EKF 필드까지 포함해서 최신 스키마에 맞춤.
+- 빌드 확인(경고 없음), `control`/`emergency` 둘 다 `safety.yaml` 신규
+  섹션(`ekf_limit`, `heartbeat_limit.land_gap_sec`)을 경고 없이 읽는 것
+  까지 확인.
+
 ## 2026-08-06
 
 ### 1. YOLO 좌표계 정리 (cam_sets.yaml)
@@ -240,18 +369,24 @@
 - 빌드 중 `control_sim.cpp` 파일이 디스크에서 사라져 있는 걸 발견함
   (`CMakeLists.txt`엔 여전히 등록돼 있어 `make all`이 거기서 실패).
   이번 작업에서 건드린 적 없음 — 확인 필요.
-- (2026-08-08 추가) `setting/safety.yaml`의 `altitude_limit`,
-  `battery_limit`, `heartbeat_limit`, `gps_limit`,
-  `vehicle_health_limit`은 전부 실측 없이 넣은 placeholder 값. 실제
-  배터리/운용 환경 기준으로 튜닝 필요.
-- (2026-08-08 추가) `emergency.cpp`의 EKF 상태확인은 정식
-  `EKF_STATUS_REPORT`가 아니라 `HEARTBEAT.system_status` 대체 지표
-  (proxy)임. 정확한 EKF variance 체크가 필요하면
-  `control/third_party/mavlink` 헤더를 `EKF_STATUS_REPORT` 포함해서
-  재생성해야 함.
-- (2026-08-08 추가) `emergency.cpp`의 "test_arm" 안전장치는
-  `MAV_SYS_STATUS_PREARM_CHECK` 비트로 임의 해석해서 구현함 - 의도와
-  맞는지 확인 필요.
-- (2026-08-08 추가) 지금 픽스호크가 물리적으로 연결 안 돼 있어 이번
-  세션의 `emergency.cpp` 변경분(LOITER 인계 포함)은 SITL/실기 연결 후
-  검증 필요. "LOITER -> 재탐색 -> 접근 재개" 루프는 아직 미구현.
+- (2026-08-08, 9번 항목 이후로 갱신) `setting/safety.yaml`의
+  `altitude_limit`, `battery_limit`, `heartbeat_limit`, `gps_limit`,
+  `vehicle_health_limit`, `ekf_limit`은 전부(`battery_limit.min_voltage_v`
+  포함, astroquad 참고해 14.0 권장했으나 아직 14.8로 안 낮춤) 실측/실비행
+  검증 없이 넣은 값. 실제 배터리/운용 환경 기준으로 튜닝 필요.
+- (2026-08-08, 14번 항목에서 해결됨 - 취소선 대신 명시) ~~emergency.cpp의
+  EKF 상태확인은 proxy~~ → 14번 항목에서 실제 `EKF_STATUS_REPORT`(id 193,
+  ardupilotmega.xml에서 pymavlink mavgen으로 생성) 기반으로 교체 완료.
+  `ekf_limit.pos_horiz_variance_max`/`velocity_variance_max`(각 1.0)도
+  실비행 검증은 안 됨 - astroquad가 쓰는 값을 그대로 가져온 것.
+- (2026-08-08) "test_arm" 안전장치는 사용자가 직접 정정: prearm 체크
+  통과 여부 + 시동 상태 자체(armed 여부)를 의미 - 10번 항목에서 반영
+  완료, 더 이상 확인 필요 항목 아님.
+- (2026-08-08, 9번 항목 이후로 갱신) `emergency.cpp`는 더 이상 LOITER/LAND
+  등 자동 대응을 하지 않음 - 순수 읽기 전용 진단 도구로 축소됐고, 실제
+  대응(LOITER 3초 유지 후 복귀, heartbeat 5초 초과 시 LAND, 예상치 못한
+  disarm 시 LAND)은 전부 `control.cpp` 안에 있음. 지금 픽스호크가 물리적
+  으로 연결 안 돼 있어 이 대응 로직들은 전부 SITL/실기 연결 후 검증
+  필요 - 아직 한 번도 실제 MAVLink 스트림으로 테스트 못 함.
+- (2026-08-08) "LOITER -> 재탐색 -> 접근 재개" 루프는 여전히 미구현
+  (12번 항목의 RC 오버라이드 논의와도 얽혀 있음 - 다음 논의 대상).

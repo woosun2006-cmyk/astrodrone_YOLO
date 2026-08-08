@@ -123,7 +123,10 @@ struct Args {
     int udp_port = 15020;
     double pixel_to_meter = 0.01;
     double target_stale_ms = 400;
-    double cycle_ms = 100;
+    // Paced to target_track.sense_cycle_ms, not control.cpp's
+    // control_cycle_ms - this loop's natural rate is YOLO's actual
+    // inference throughput (~10 fps), not the Pixhawk send rate.
+    double sense_cycle_ms = 100;
 };
 
 }  // namespace
@@ -146,7 +149,7 @@ int run(int argc, char** argv) {
     args.udp_port = static_cast<int>(track.get_long_or("udp_port", 15020));
     args.pixel_to_meter = track.get_double_or("pixel_to_meter", 0.01);
     args.target_stale_ms = track.get_double_or("target_stale_ms", 400);
-    args.cycle_ms = track.get_double_or("cycle_ms", 100);
+    args.sense_cycle_ms = track.get_double_or("sense_cycle_ms", 100);
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -168,13 +171,13 @@ int run(int argc, char** argv) {
             args.udp_port = std::stoi(next("--udp-port"));
         } else if (arg == "--pixel-to-meter") {
             args.pixel_to_meter = std::stod(next("--pixel-to-meter"));
-        } else if (arg == "--cycle-ms") {
-            args.cycle_ms = std::stod(next("--cycle-ms"));
+        } else if (arg == "--sense-cycle-ms") {
+            args.sense_cycle_ms = std::stod(next("--sense-cycle-ms"));
         }
     }
 
-    if (args.cycle_ms <= 0) {
-        std::cerr << "--cycle-ms must be greater than zero" << std::endl;
+    if (args.sense_cycle_ms <= 0) {
+        std::cerr << "--sense-cycle-ms must be greater than zero" << std::endl;
         return 2;
     }
 
@@ -186,9 +189,9 @@ int run(int argc, char** argv) {
     }
     std::cout << "Connected. Polling YOLO at http://" << args.yolo_host << ":" << args.yolo_port
               << "/target, publishing range on UDP 127.0.0.1:" << args.udp_port << " every "
-              << args.cycle_ms << " ms." << std::endl;
+              << args.sense_cycle_ms << " ms." << std::endl;
 
-    request_message_interval(*connection, MAVLINK_MSG_ID_ALTITUDE, 1000.0 / args.cycle_ms);
+    request_message_interval(*connection, MAVLINK_MSG_ID_ALTITUDE, 1000.0 / args.sense_cycle_ms);
 
     TargetRangeSender sender(args.udp_port);
     double altitude_m = 0.0;
@@ -200,7 +203,7 @@ int run(int argc, char** argv) {
     // here for up to one cycle is how we wait for "the next tick" instead of
     // a separate sleep. If the flight controller hiccups for a tick, the
     // last known altitude carries over below rather than the cycle stalling.
-    double cycle_sec = args.cycle_ms / 1000.0;
+    double cycle_sec = args.sense_cycle_ms / 1000.0;
 
     while (true) {
         mavlink_message_t msg;
@@ -219,8 +222,13 @@ int run(int argc, char** argv) {
         try {
             std::string body = http_get(args.yolo_host, args.yolo_port, "/target", 0.2);
             bool found = json_bool(body, "found");
+            // "found" is recency-only (this single frame saw something);
+            // "confirmed" is yolo_live.py's TARGET_CONFIRM_FRAMES-in-a-row
+            // stability check. Require both so a one-frame misdetection
+            // can't turn into a velocity command.
+            bool confirmed = json_bool(body, "confirmed");
             double age_ms = json_number(body, "age_ms");
-            if (found && !std::isnan(age_ms) && age_ms <= args.target_stale_ms) {
+            if (found && confirmed && !std::isnan(age_ms) && age_ms <= args.target_stale_ms) {
                 out.x_px = static_cast<float>(json_number(body, "x_px"));
                 out.y_px = static_cast<float>(json_number(body, "y_px"));
                 have_target = std::isfinite(out.x_px) && std::isfinite(out.y_px);

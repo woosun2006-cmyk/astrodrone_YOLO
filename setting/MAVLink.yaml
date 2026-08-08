@@ -34,11 +34,20 @@ target_track:
   max_lateral_speed: 0.5   # m/s cap, control.cpp's centering velocity
   stop_distance: 2.0       # m; forward speed -> 0 once inside this range
   approach_duration_sec: 60  # control.cpp lands automatically after this long
-  # 1.range calc -> 2.velocity calc -> 3.send-to-Pixhawk cycle period. Set to
-  # 20Hz for a smoother GUIDED velocity stream than the underlying data
-  # needs: YOLO_MODEL/yolo_live.py's own comments put YOLOv5n inference at
-  # IMG_SIZE=320 around ~10 fps on this Jetson Nano, so roughly every other
-  # 50ms tick re-sends the same target reading rather than a fresher one -
-  # that's fine (ArduPilot expects a steady setpoint stream and a repeated
-  # value is a valid one), but don't expect this alone to sharpen tracking.
-  cycle_ms: 50
+  # Two independent rates that used to share a single `cycle_ms` value even
+  # though they pace two different processes with two different natural
+  # rates:
+  #   - sense_cycle_ms: target_distance.cpp's own loop (YOLO /target poll +
+  #     ALTITUDE request interval). YOLO_MODEL/yolo_live.py's own comments
+  #     put YOLOv5n inference at IMG_SIZE=320 around ~10 fps on this Jetson
+  #     Nano, so this is paced to roughly match that, instead of polling
+  #     faster than new detections can actually arrive.
+  #   - control_cycle_ms: control.cpp's 1.range calc -> 2.velocity calc ->
+  #     3.send-to-Pixhawk cycle period. Deliberately kept faster than
+  #     sense_cycle_ms: ArduPilot's GUIDED mode wants a steady velocity
+  #     setpoint stream, and control.cpp already re-sends the last valid
+  #     target reading between fresh ones (see target_stale_ms/
+  #     link_stale_ms below), so this can run faster than the sensing side
+  #     without needing fresher data every tick.
+  sense_cycle_ms: 100
+  control_cycle_ms: 50
