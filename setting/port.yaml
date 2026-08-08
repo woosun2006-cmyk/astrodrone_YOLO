@@ -1,5 +1,5 @@
 # HTTP server ports for each streaming/logging program.
 # Kept distinct so all three can run on the Jetson at the same time.
-camserver: 8000   # test_cam/camserver.py
-fpslog: 8001      # test_cam/fpslog.py
-yolo_live: 8002   # YOLO_MODEL/yolo_live.py
+camserver: 8000   # test_cam/camserver.py   -> http://192.168.0.197:8000/
+fpslog: 8001      # test_cam/fpslog.py      -> http://192.168.0.197:8001/
+yolo_live: 8002   # YOLO_MODEL/yolo_live.py -> http://192.168.0.197:8002/

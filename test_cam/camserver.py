@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 """MJPEG camera server for the Jetson CSI camera."""
+import os
+
+os.environ.setdefault("OPENBLAS_CORETYPE", "ARMV8")
+
 import argparse
 import json
 import socket
@@ -11,20 +15,53 @@ from socketserver import ThreadingMixIn
 from urllib.parse import parse_qs, urlparse
 
 import cv2
+import numpy as np
+import yaml
 
+SETTING_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "setting")
+PORT_SETTINGS_PATH = os.path.join(SETTING_DIR, "port.yaml")
+CAM_SETTINGS_PATH = os.path.join(SETTING_DIR, "cam_sets.yaml")
+
+with open(PORT_SETTINGS_PATH, encoding="utf-8") as f:
+    DEFAULT_PORT = yaml.safe_load(f)["camserver"]
+
+with open(CAM_SETTINGS_PATH, encoding="utf-8") as f:
+    _cam_yaml = yaml.safe_load(f)
+    _cam_settings = _cam_yaml["camserver"]
+    _wb_correction = _cam_yaml["wb_correction"]
 
 DEFAULT_HOST = "0.0.0.0"
-DEFAULT_PORT = 8000
-DEFAULT_SENSOR_ID = 0
-DEFAULT_WIDTH = 1280
-DEFAULT_HEIGHT = 720
-DEFAULT_FPS = 30
-DEFAULT_QUALITY = 80
+DEFAULT_SENSOR_ID = _cam_settings["sensor_id"]
+DEFAULT_WIDTH = _cam_settings["width"]
+DEFAULT_HEIGHT = _cam_settings["height"]
+DEFAULT_FPS = _cam_settings["fps"]
+DEFAULT_QUALITY = _cam_settings["quality"]
+
+# This IMX219 module's default AWB ("auto"/off) leaves a strong red cast
+# (measured R/G ~1.36). wbmode=3 (fluorescent) was the closest to neutral
+# out of the presets tried (R/G ~1.27, B/G ~1.00) - a partial mitigation
+# until camera_overrides.isp is installed on the system (needs root).
+WBMODE = _cam_settings["wbmode"]
+
+# Extra per-channel gain on top of wbmode, tuned live with fpslog.py's r/g/b
+# sliders and saved from there - see setting/cam_sets.yaml's wb_correction.
+WB_GAINS_BGR = (_wb_correction["blue_gain"], _wb_correction["green_gain"],
+                _wb_correction["red_gain"])
+
+
+def apply_wb_correction(frame):
+    if WB_GAINS_BGR == (1.0, 1.0, 1.0):
+        return frame
+    out = frame.astype(np.float32)
+    for i, gain in enumerate(WB_GAINS_BGR):
+        if gain != 1.0:
+            out[:, :, i] *= gain
+    return np.clip(out, 0, 255).astype(np.uint8)
 
 
 def gst_pipeline(sensor_id, width, height, fps, flip_method=0):
     return (
-        f"nvarguscamerasrc sensor-id={sensor_id} ! "
+        f"nvarguscamerasrc sensor-id={sensor_id} wbmode={WBMODE} ! "
         f"video/x-raw(memory:NVMM), width={width}, height={height}, "
         f"format=NV12, framerate={fps}/1 ! "
         f"nvvidconv flip-method={flip_method} ! "
@@ -63,6 +100,7 @@ class Camera:
             if not ok:
                 time.sleep(0.05)
                 continue
+            image = apply_wb_correction(image)
 
             now = time.monotonic()
             with self.condition:

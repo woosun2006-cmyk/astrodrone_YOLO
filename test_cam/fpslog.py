@@ -10,9 +10,13 @@ Exposure is tracked alongside fps because auto-exposure is what usually drags
 the frame rate down: a dark scene needs a longer shutter, and the shutter puts
 a hard ceiling on fps (16.6ms -> 60fps, 33ms -> 30fps, 100ms -> 10fps).
 """
+import os
+
+os.environ.setdefault("OPENBLAS_CORETYPE", "ARMV8")
+
 import http.server
 import json
-import os
+import re
 import socket
 import socketserver
 import statistics
@@ -21,6 +25,14 @@ import threading
 import time
 import urllib.parse
 from collections import deque
+
+import cv2
+import numpy as np
+import yaml
+
+SETTING_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "setting")
+PORT_SETTINGS_PATH = os.path.join(SETTING_DIR, "port.yaml")
+CAM_SETTINGS_PATH = os.path.join(SETTING_DIR, "cam_sets.yaml")
 
 # ---------------------------------------------------------------------------
 # SETTINGS - edit these
@@ -34,7 +46,13 @@ LIVE_WINDOW_SEC = 40       # how much history the idle chart shows
 LOG_PREFIX = "fps_log"     # saved as <prefix>_MMDD_HHMM.txt
                            # e.g. fps_log_0721_2051.txt = Jul 21, 20:51
 
-PORT = 8001
+with open(PORT_SETTINGS_PATH, encoding="utf-8") as f:
+    PORT = yaml.safe_load(f)["fpslog"]
+
+with open(CAM_SETTINGS_PATH, encoding="utf-8") as f:
+    _cam_yaml = yaml.safe_load(f)
+    _cam_settings = _cam_yaml["fpslog"]
+    _wb_correction = _cam_yaml["wb_correction"]
 
 # Jetson Nano + IMX219, captured via nvarguscamerasrc (libargus), not rpicam-vid.
 # IMX219 sensor modes on this board (from GST_ARGUS mode enum):
@@ -42,16 +60,37 @@ PORT = 8001
 #   3: 1640x1232 @30fps   4: 1280x720  @60fps   5: 1280x720  @120fps
 # WIDTH/HEIGHT/FPS must match SENSOR_MODE exactly - nvarguscamerasrc picks the
 # mode by index, it does not search for one that fits arbitrary caps.
-SENSOR_ID = 0
-SENSOR_MODE = 4
-WIDTH, HEIGHT = 1280, 720
-FPS = 60                   # requested fps; measured sensor ceiling is 59.999999
-FIXED_SHUTTER_US = 0       # 0 = auto exposure. Set e.g. 5000 (=5ms) to pin it
-                           # and watch fps stay flat regardless of brightness.
-                           # (Argus does not report the auto-exposure value
-                           # back per frame, so exposure_us is only known/
-                           # logged when this is set to a fixed value.)
+SENSOR_ID = _cam_settings["sensor_id"]
+SENSOR_MODE = _cam_settings["sensor_mode"]
+WIDTH, HEIGHT = _cam_settings["width"], _cam_settings["height"]
+FPS = _cam_settings["fps"]             # requested fps; measured sensor ceiling is 59.999999
+FIXED_SHUTTER_US = _cam_settings["fixed_shutter_us"]  # 0 = auto exposure. Set
+                           # e.g. 5000 (=5ms) to pin it and watch fps stay
+                           # flat regardless of brightness. (Argus does not
+                           # report the auto-exposure value back per frame,
+                           # so exposure_us is only known/logged when this is
+                           # set to a fixed value.)
+WBMODE = _cam_settings["wbmode"]  # this IMX219 module's default AWB leaves a
+                           # strong red cast (measured R/G ~1.36). wbmode=3
+                           # (fluorescent) was closest to neutral out of the
+                           # presets tried (R/G ~1.27, B/G ~1.00) - a partial
+                           # mitigation until camera_overrides.isp is
+                           # installed system-wide (needs root).
+QUALITY = _cam_settings["quality"]  # targets a 4-8Mbps bitrate band,
+                           # measured on this camera at 1280x720@30fps
 # ---------------------------------------------------------------------------
+
+# sensor_mode/width/height/fps always change together - a mode dropdown in
+# the UI picks one of these presets rather than letting width/height/fps be
+# set independently, since nvarguscamerasrc needs them to match exactly.
+SENSOR_MODES = [
+    {"mode": 0, "width": 3264, "height": 2464, "fps": 21},
+    {"mode": 1, "width": 3264, "height": 1848, "fps": 28},
+    {"mode": 2, "width": 1920, "height": 1080, "fps": 30},
+    {"mode": 3, "width": 1640, "height": 1232, "fps": 30},
+    {"mode": 4, "width": 1280, "height": 720, "fps": 60},
+    {"mode": 5, "width": 1280, "height": 720, "fps": 120},
+]
 
 FPS_WINDOW = 30  # frames averaged for one fps reading
 
@@ -59,6 +98,49 @@ state = {"frame": None, "times": deque(maxlen=FPS_WINDOW),
          "sizes": deque(maxlen=FPS_WINDOW), "count": 0, "proc": None}
 cond = threading.Condition()
 stopping = threading.Event()
+
+# Live-tunable from the browser (mode/quality dropdown+slider) so cpu/gpu
+# load can be watched while picking a resolution/bitrate. Changing either
+# kills state["proc"], which makes grabber()'s read loop exit and rebuild
+# the pipeline from these values - see grabber() and the /mode, /quality
+# handlers below.
+cam_lock = threading.Lock()
+cam_state = {"sensor_mode": SENSOR_MODE, "width": WIDTH, "height": HEIGHT,
+             "fps": FPS, "quality": QUALITY}
+restart_requested = threading.Event()
+
+# Live rgb correction preview, for visually tuning the wb_correction gains
+# that camserver.py/yolo_live.py apply. Sliders are 0-255 with 128 =
+# neutral (gain 1.0). Off by default: decoding+re-encoding every JPEG for
+# the preview adds real overhead that would otherwise pollute this tool's
+# own fps benchmark, so it only costs anything while actively tuning.
+def _gain_to_slider(gain):
+    return max(0, min(255, round(gain * 128)))
+
+rgb_lock = threading.Lock()
+rgb_state = {
+    "enabled": False,
+    "r": _gain_to_slider(_wb_correction["red_gain"]),
+    "g": _gain_to_slider(_wb_correction["green_gain"]),
+    "b": _gain_to_slider(_wb_correction["blue_gain"]),
+}
+
+
+def _save_wb_correction(red_gain, green_gain, blue_gain):
+    """Rewrite just the three wb_correction values in cam_sets.yaml.
+
+    A regex patch instead of yaml.safe_dump so the file's comments and
+    section layout (camserver:/fpslog: settings, other people's edits)
+    survive - a full re-dump would silently drop all of that.
+    """
+    with open(CAM_SETTINGS_PATH, encoding="utf-8") as f:
+        text = f.read()
+    for key, value in (("red_gain", red_gain), ("green_gain", green_gain),
+                       ("blue_gain", blue_gain)):
+        text = re.sub(rf"^(\s*{key}:\s*)[\d.]+", rf"\g<1>{value:.3f}",
+                      text, count=1, flags=re.MULTILINE)
+    with open(CAM_SETTINGS_PATH, "w", encoding="utf-8") as f:
+        f.write(text)
 
 history = deque(maxlen=int(LIVE_WINDOW_SEC / SAMPLE_INTERVAL_SEC) + 2)
 hist_lock = threading.Lock()
@@ -68,28 +150,62 @@ rec = {"active": False, "rows": [], "t0": 0.0, "duration": 0.0,
 rec_lock = threading.Lock()
 
 
+def _apply_rgb_correction(jpeg_bytes):
+    """Decode, scale channels by the live slider gains, re-encode.
+
+    Only called while rgb_state["enabled"] - this round-trip is the cost of
+    previewing the correction here, since the fast path otherwise never
+    decodes a frame at all (see grabber()'s docstring).
+    """
+    with rgb_lock:
+        r, g, b = rgb_state["r"], rgb_state["g"], rgb_state["b"]
+    img = cv2.imdecode(np.frombuffer(jpeg_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if img is None:
+        return jpeg_bytes
+    img = img.astype(np.float32)
+    for i, gain in enumerate((b / 128.0, g / 128.0, r / 128.0)):  # BGR order
+        if gain != 1.0:
+            img[:, :, i] *= gain
+    img = np.clip(img, 0, 255).astype(np.uint8)
+    with cam_lock:
+        quality = cam_state["quality"]
+    ok, enc = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    return enc.tobytes() if ok else jpeg_bytes
+
+
 def grabber():
     """Feeds raw JPEG frames from nvarguscamerasrc into state["frame"].
 
     gst-launch-1.0 with a bare `fdsink fd=1` writes back-to-back JPEGs with
     no container - same byte shape as the mjpeg stream this parser was
-    written against, so the SOI/EOI scan below needs no changes.
+    written against, so the SOI/EOI scan below needs no changes. Frames
+    pass through untouched unless rgb_state["enabled"] (see
+    _apply_rgb_correction) - keeping this path free of decode/encode work
+    is what makes the fps/bitrate numbers here trustworthy as a benchmark.
     """
-    cmd = [
-        "gst-launch-1.0", "-q",
-        "nvarguscamerasrc", f"sensor-id={SENSOR_ID}", f"sensor-mode={SENSOR_MODE}",
-    ]
-    if FIXED_SHUTTER_US > 0:
-        ns = FIXED_SHUTTER_US * 1000
-        cmd += [f"exposuretimerange={ns} {ns}", "aelock=true"]
-    cmd += [
-        "!", f"video/x-raw(memory:NVMM),width={WIDTH},height={HEIGHT},framerate={FPS}/1",
-        "!", "nvvidconv",
-        "!", "video/x-raw,format=I420",
-        "!", "jpegenc", "quality=85",
-        "!", "fdsink", "fd=1",
-    ]
     while not stopping.is_set():
+        restart_requested.clear()
+        with cam_lock:
+            sensor_mode = cam_state["sensor_mode"]
+            width, height, fps = cam_state["width"], cam_state["height"], cam_state["fps"]
+            quality = cam_state["quality"]
+
+        cmd = [
+            "gst-launch-1.0", "-q",
+            "nvarguscamerasrc", f"sensor-id={SENSOR_ID}", f"sensor-mode={sensor_mode}",
+            f"wbmode={WBMODE}",
+        ]
+        if FIXED_SHUTTER_US > 0:
+            ns = FIXED_SHUTTER_US * 1000
+            cmd += [f"exposuretimerange={ns} {ns}", "aelock=true"]
+        cmd += [
+            "!", f"video/x-raw(memory:NVMM),width={width},height={height},framerate={fps}/1",
+            "!", "nvvidconv",
+            "!", "video/x-raw,format=I420",
+            "!", "jpegenc", f"quality={quality}",
+            "!", "fdsink", "fd=1",
+        ]
+
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                 stderr=subprocess.DEVNULL)
         state["proc"] = proc
@@ -106,6 +222,8 @@ def grabber():
                     break
                 frame = buf[start:end + 2]
                 buf = buf[end + 2:]
+                if rgb_state["enabled"]:
+                    frame = _apply_rgb_correction(frame)
                 now = time.monotonic()
                 with cond:
                     state["frame"] = frame
@@ -116,7 +234,8 @@ def grabber():
         proc.wait()
         if stopping.is_set():
             return
-        time.sleep(3)
+        if not restart_requested.is_set():
+            time.sleep(3)  # crash/EOF backoff - skipped on a deliberate mode/quality change
 
 
 def fixed_exposure_metadata():
@@ -161,7 +280,7 @@ def _cpu_thermal_zone():
 
 
 def sysinfo():
-    """CPU / RAM / clock / temperature of the Pi itself."""
+    """CPU / GPU / RAM / clock / temperature of the Jetson Nano itself."""
     out = {}
     try:
         with open("/proc/stat") as f:
@@ -194,6 +313,11 @@ def sysinfo():
     try:
         with open(_cpu_thermal_zone()) as f:
             out["temp_c"] = round(int(f.read().strip()) / 1000, 1)
+    except Exception:
+        pass
+    try:
+        with open("/sys/devices/57000000.gpu/load") as f:
+            out["gpu_pct"] = round(int(f.read().strip()) / 10, 1)
     except Exception:
         pass
     return out
@@ -251,7 +375,9 @@ def finish_locked():
         frames = rows[-1]["frames_total"] - rows[0]["frames_total"]
     except Exception:
         pass
-    text = report(rows, started_str, duration, frames)
+    with cam_lock:
+        cam = dict(cam_state)
+    text = report(rows, started_str, duration, frames, cam)
     with open(path, "w") as f:
         f.write(text + "\n")
     rec["saved"] = name
@@ -282,16 +408,19 @@ def describe(vals, unit="", scale=1.0):
     return s
 
 
-def report(rows, started_str, duration, frames):
+def report(rows, started_str, duration, frames, cam):
     warm = [r for r in rows if r["elapsed_s"] < WARMUP_SKIP_SEC]
     body = [r for r in rows if r["elapsed_s"] >= WARMUP_SKIP_SEC] or rows
     fps = col(body, "fps")
+    cam_fps = cam["fps"]
 
     W = 68
     L = ["=" * W, f" FPS LOG   {started_str}", "=" * W,
          f" requested      : {duration:.0f} s",
-         f" resolution     : {WIDTH} x {HEIGHT}",
-         f" requested fps  : {FPS}",
+         f" resolution     : {cam['width']} x {cam['height']} "
+         f"(sensor_mode {cam['sensor_mode']})",
+         f" requested fps  : {cam_fps}",
+         f" jpeg quality   : {cam['quality']}",
          " exposure       : " + (f"fixed {FIXED_SHUTTER_US/1000:.1f} ms"
                                  if FIXED_SHUTTER_US > 0 else "auto"),
          f" samples        : {len(rows)} "
@@ -303,22 +432,23 @@ def report(rows, started_str, duration, frames):
          f" lux       {describe(col(body, 'lux'))}",
          f" bitrate   {describe(col(body, 'mbps'), ' Mbps')}",
          f" cpu       {describe(col(body, 'cpu_pct'), ' %')}",
+         f" gpu       {describe(col(body, 'gpu_pct'), ' %')}",
          f" temp      {describe(col(body, 'temp_c'), ' C')}",
          f" clock     {describe(col(body, 'clock_mhz'), ' MHz')}", ""]
 
     if fps:
-        drop = [r for r in body if r["fps"] < FPS * 0.9]
+        drop = [r for r in body if r["fps"] < cam_fps * 0.9]
         L += ["-" * W, " VERDICT", "-" * W]
         if not drop:
-            L.append(f" fps held near {FPS} for the whole run. No drops.")
+            L.append(f" fps held near {cam_fps} for the whole run. No drops.")
         else:
             worst = min(drop, key=lambda r: r["fps"])
             L.append(f" {len(drop)} of {len(body)} samples fell below "
-                     f"{FPS*0.9:.0f} fps.")
+                     f"{cam_fps*0.9:.0f} fps.")
             L.append(f" worst {worst['fps']:.1f} fps at t={worst['elapsed_s']:.1f}s")
             if worst.get("exposure_us"):
                 e = float(worst["exposure_us"]) / 1000
-                budget = 1000.0 / FPS
+                budget = 1000.0 / cam_fps
                 if e > budget:
                     L.append(f" exposure there was {e:.1f} ms > {budget:.1f} ms "
                              f"budget -> caps fps at about {1000/e:.0f}")
@@ -336,7 +466,7 @@ def report(rows, started_str, duration, frames):
         L.append("")
 
     L += ["-" * W, " FPS OVER TIME", "-" * W]
-    top = max([FPS] + fps) if fps else FPS
+    top = max([cam_fps] + fps) if fps else cam_fps
     for r in rows:
         n = int(round(r["fps"] / top * 40)) if top else 0
         mark = " " if r["elapsed_s"] >= WARMUP_SKIP_SEC else "~"
@@ -405,6 +535,25 @@ PAGE = """<!doctype html><meta charset=utf-8>
   <button id=go>Record</button>
   <span class=st id=st>streaming</span>
 </div>
+<div class=ctl>
+  <label for=mode>resolution mode</label>
+  <select id=mode>__MODE_OPTIONS__</select>
+  <label for=qual>quality</label>
+  <input id=qual type=range min=1 max=100 value=__QUALITY__>
+  <span id=qualval>__QUALITY__</span>
+  <span class=st>restarts the capture pipeline - watch cpu/gpu below while tuning</span>
+</div>
+<div class=ctl>
+  <label><input id=rgbon type=checkbox __RGB_CHECKED__> color correction</label>
+  <label for=rr>r</label>
+  <input id=rr type=range min=0 max=255 value=__R__><span id=rrval>__R__</span>
+  <label for=rg>g</label>
+  <input id=rg type=range min=0 max=255 value=__G__><span id=rgval>__G__</span>
+  <label for=rb>b</label>
+  <input id=rb type=range min=0 max=255 value=__B__><span id=rbval>__B__</span>
+  <button id=rgbsave>Save</button>
+  <span class=st id=rgbst>128 = neutral. adds decode/encode overhead while on</span>
+</div>
 <div class=bar><i id=prog></i></div>
 
 <img src="/stream">
@@ -424,8 +573,9 @@ PAGE = """<!doctype html><meta charset=utf-8>
     <div class=r><span class=k>lux</span><span class=v id=lux>--</span></div>
     <div class=r><span class=k>bitrate</span><span class=v id=bw>--</span></div>
 
-    <h2>raspberry pi</h2>
+    <h2>jetson nano</h2>
     <div class=r><span class=k>cpu</span><span class=v id=cpu>--</span></div>
+    <div class=r><span class=k>gpu</span><span class=v id=gpu>--</span></div>
     <div class=r><span class=k>ram</span><span class=v id=ram>--</span></div>
     <div class=r><span class=k>clock</span><span class=v id=clk>--</span></div>
     <div class=r><span class=k>temp</span><span class=v id=tmp>--</span></div>
@@ -437,7 +587,7 @@ PAGE = """<!doctype html><meta charset=utf-8>
 
 <script>
 const cv=document.getElementById('chart'), cx=cv.getContext('2d');
-const TOP=__FPS__;
+let TOP=__FPS__;
 const $=id=>document.getElementById(id);
 let recording=false, xmax=__WIN__;
 
@@ -492,11 +642,29 @@ $('go').onclick=async()=>{
   tick();
 };
 
+$('mode').onchange=async()=>{ await fetch('/mode?value='+$('mode').value); };
+$('qual').oninput=()=>{ $('qualval').textContent=$('qual').value; };
+$('qual').onchange=async()=>{ await fetch('/quality?value='+$('qual').value); };
+
+$('rgbon').onchange=async()=>{
+  await fetch('/rgb?enabled='+($('rgbon').checked?'1':'0'));
+};
+const rgbSlider=(id,val,label)=>{
+  $(id).oninput=()=>{ $(label).textContent=$(id).value; };
+  $(id).onchange=async()=>{ await fetch('/rgb?'+val+'='+$(id).value); };
+};
+rgbSlider('rr','r','rrval'); rgbSlider('rg','g','rgval'); rgbSlider('rb','b','rbval');
+$('rgbsave').onclick=async()=>{
+  const r=await (await fetch('/rgb_save')).json();
+  $('rgbst').textContent='saved: r='+r.red_gain+' g='+r.green_gain+' b='+r.blue_gain;
+};
+
 async function tick(){
   try{
     const s=await (await fetch('/data')).json();
     const c=s.current||{};
     recording=s.recording; xmax=s.xmax||__WIN__;
+    TOP=s.fps_target||TOP;
 
     $('fps').textContent=(c.fps??0).toFixed(1);
     $('avg').textContent=s.avg!=null?s.avg.toFixed(1):'--';
@@ -513,6 +681,9 @@ async function tick(){
     const cpu=c.cpu_pct;
     $('cpu').textContent=cpu!=null?cpu.toFixed(0)+' %':'--';
     $('cpu').className='v'+(cpu>85?' bad':cpu>60?' warn':'');
+    const gpu=c.gpu_pct;
+    $('gpu').textContent=gpu!=null?gpu.toFixed(0)+' %':'--';
+    $('gpu').className='v'+(gpu>85?' bad':gpu>60?' warn':'');
     $('ram').textContent=c.mem_used_mb!=null
       ? c.mem_used_mb+' / '+c.mem_total_mb+' MB':'--';
     $('clk').textContent=c.clock_mhz?c.clock_mhz+' MHz':'--';
@@ -558,9 +729,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
         q = urllib.parse.parse_qs(query)
 
         if path == "/":
+            with cam_lock:
+                cur_mode, cur_quality = cam_state["sensor_mode"], cam_state["quality"]
+            with rgb_lock:
+                rgb = dict(rgb_state)
+            options = "".join(
+                f'<option value={m["mode"]}'
+                f'{" selected" if m["mode"] == cur_mode else ""}>'
+                f'{m["mode"]}: {m["width"]}x{m["height"]} @{m["fps"]}fps</option>'
+                for m in SENSOR_MODES
+            )
             page = (PAGE.replace("__DEF__", str(DEFAULT_RECORD_SEC))
                         .replace("__FPS__", str(FPS))
-                        .replace("__WIN__", str(LIVE_WINDOW_SEC)))
+                        .replace("__WIN__", str(LIVE_WINDOW_SEC))
+                        .replace("__MODE_OPTIONS__", options)
+                        .replace("__QUALITY__", str(cur_quality))
+                        .replace("__R__", str(rgb["r"]))
+                        .replace("__G__", str(rgb["g"]))
+                        .replace("__B__", str(rgb["b"]))
+                        .replace("__RGB_CHECKED__", "checked" if rgb["enabled"] else ""))
             return self._send(page.encode(), "text/html; charset=utf-8")
 
         if path == "/start":
@@ -583,6 +770,58 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         if path == "/data":
             return self._json(self._data())
+
+        if path == "/mode":
+            try:
+                idx = int(q.get("value", [""])[0])
+                preset = next(m for m in SENSOR_MODES if m["mode"] == idx)
+            except (StopIteration, ValueError, IndexError):
+                return self._json({"ok": False})
+            with cam_lock:
+                cam_state.update(sensor_mode=preset["mode"], width=preset["width"],
+                                  height=preset["height"], fps=preset["fps"])
+                proc = state["proc"]
+            restart_requested.set()
+            if proc:
+                proc.terminate()
+            return self._json({"ok": True, **preset})
+
+        if path == "/quality":
+            try:
+                val = max(1, min(100, int(q.get("value", [""])[0])))
+            except (ValueError, IndexError):
+                return self._json({"ok": False})
+            with cam_lock:
+                cam_state["quality"] = val
+                proc = state["proc"]
+            restart_requested.set()
+            if proc:
+                proc.terminate()
+            return self._json({"ok": True, "quality": val})
+
+        if path == "/rgb":
+            try:
+                with rgb_lock:
+                    if "r" in q:
+                        rgb_state["r"] = max(0, min(255, int(q["r"][0])))
+                    if "g" in q:
+                        rgb_state["g"] = max(0, min(255, int(q["g"][0])))
+                    if "b" in q:
+                        rgb_state["b"] = max(0, min(255, int(q["b"][0])))
+                    if "enabled" in q:
+                        rgb_state["enabled"] = q["enabled"][0] == "1"
+                    out = dict(rgb_state)
+            except (ValueError, IndexError):
+                return self._json({"ok": False})
+            return self._json({"ok": True, **out})
+
+        if path == "/rgb_save":
+            with rgb_lock:
+                r, g, b = rgb_state["r"], rgb_state["g"], rgb_state["b"]
+            gains = {"red_gain": r / 128.0, "green_gain": g / 128.0, "blue_gain": b / 128.0}
+            _save_wb_correction(**gains)
+            print(f"saved wb_correction: {gains}", flush=True)
+            return self._json({"ok": True, **{k: round(v, 3) for k, v in gains.items()}})
 
         if path == "/stream":
             return self.stream()
@@ -612,7 +851,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         cur = (rows[-1] if active and rows
                else (hist[-1][1] if hist else {}))
-        out = {"points": pts, "current": cur, "width": WIDTH, "height": HEIGHT,
+        with cam_lock:
+            cam = dict(cam_state)
+        with rgb_lock:
+            rgb = dict(rgb_state)
+        out = {"points": pts, "current": cur, "width": cam["width"],
+               "height": cam["height"], "fps_target": cam["fps"],
+               "sensor_mode": cam["sensor_mode"], "quality": cam["quality"],
+               "rgb": rgb,
                "recording": active, "elapsed": round(elapsed, 1),
                "duration": duration, "xmax": xmax, "saved": saved}
         if pool:

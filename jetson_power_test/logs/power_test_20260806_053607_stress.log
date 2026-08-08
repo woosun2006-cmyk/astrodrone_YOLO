@@ -1,0 +1,2 @@
+Stress started: GPU=NVIDIA Tegra X1, CPU threads=3, CPU duty=76%, GPU duty=85%, duration=300s
+Stress finished normally (794668 GPU launches).
