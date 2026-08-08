@@ -107,6 +107,46 @@
   `emergency.cpp`에 이미 있는 상태전이 지점마다 JSONL 한 줄씩 남기는
   방식 제안.
 
+### 8. control.cpp / emergency.cpp 역할 분리 - "단일 명령 프로세스" 구조로 재설계 (완료)
+문제: 6번에서 만든 `emergency.cpp`가 LOITER 전환 등 MAVLink 명령을 직접
+보내는 구조였는데, 실비행에서는 `control.cpp`도 계속 떠서 자기 명령을
+보내고 있을 것이므로 두 프로세스가 동시에 같은 기체에 명령을 보내
+충돌할 수 있음. 요청에 따라 "명령은 control.cpp 하나만" 구조로 재설계:
+
+- **`control/emergency_link.hpp` / `.cpp`** (신규): `target_link.hpp`와
+  동일한 패턴의 루프백 UDP 구조체(`EmergencyMsg{seq, active, reason}`).
+  `emergency.cpp -> control.cpp` 단방향, 매 사이클 상태를 그대로
+  재전송(엣지 트리거 아님 - 패킷 유실/재시작에도 한 사이클 뒤엔 수렴).
+  `drone_lib`에 소스 등록.
+- **`emergency.cpp` 전면 수정**: `drone::connect()`/`set_mode()`/
+  `send_velocity()` 등 명령 관련 코드 전부 제거, `open_connection()`으로
+  읽기 전용 연결만 사용(check_alt.cpp와 동일 방식). altitude 관련 로직도
+  전부 제거(→ control.cpp로 이동). battery/heartbeat/gps/vehicle_health
+  체크는 유지하되, 위반 시 `EmergencySender`로 `{active, reason}`을 매
+  틱마다 브로드캐스트만 함 - 기체에 아무 명령도 보내지 않음.
+- **`control.cpp` 전면 수정**: (1) `altitude_limit`(soft/hard/천장) 판정 +
+  GUIDED 하강 보정 로직을 `emergency.cpp`에서 옮겨와 `approach_target()`
+  루프에 통합 - 이미 `target_distance.cpp`가 매 사이클 UDP로 보내주는
+  `TargetRangeMsg.altitude_m`을 재사용해서 별도 MAVLink ALTITUDE 구독
+  없이 처리. (2) `EmergencyReceiver`로 emergency.cpp 신호를 매 사이클
+  폴링, `active=1`이면 `LOITER`로 전환하고 **최소 3초 유지**
+  (`kMinLoiterHoldSec`, 채터링 방지), 신호가 꺼지고 최소 유지시간이
+  지나면 `GUIDED`로 복귀해서 원래 타겟 추적 로직 재개.
+- **`setting/safety.yaml`**: `emergency_link.udp_port: 15030` 섹션 추가
+  (target_track과 다른 포트). `altitude_limit`/`vehicle_health_limit`
+  등 주석에서 "emergency.cpp가 처리" -> "control.cpp가 처리, emergency.cpp
+  는 감시만"으로 정정. `battery_limit`에 `min_voltage_v: 14.8` 추가
+  (사용자가 알려준 4S 배터리 공칭전압 14.8V 기준 - 실측 후 조정 필요,
+  자세한 근거는 야믈 주석 참고).
+- `CMakeLists.txt`에 `emergency_link.cpp` 등록. 전체 빌드 확인
+  (경고 없음), `control`/`emergency` 둘 다 `safety.yaml` 새 섹션을
+  경고 없이 읽는 것까지 확인.
+- **미구현으로 남은 부분**: LOITER 복귀 시 "YOLO가 타겟을 다시
+  `confirmed`로 잡을 때까지 기다렸다가 재개"까지는 아직 안 넣음 - 지금은
+  최소 3초 + 위험신호 해제만 조건이고, 복귀 직후 타겟이 없으면 기존
+  `tracking=false` 경로(속도 0, 호버)로 자연스럽게 넘어가긴 하지만
+  "확인된 재탐지"를 복귀 조건 자체에 넣는 건 아님.
+
 ## 2026-08-06
 
 ### 1. YOLO 좌표계 정리 (cam_sets.yaml)
