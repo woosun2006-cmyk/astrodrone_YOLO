@@ -1,5 +1,112 @@
 # Developing Log (MJ)
 
+## 2026-08-08
+
+### 1. control_sim.cpp - CMakeLists 등록 해지
+- 08-06 로그에서 확인 필요로 남겨뒀던 항목: 디스크에 파일이 없는데
+  `CMakeLists.txt`엔 여전히 등록돼 있어 `make all`이 실패하던 문제.
+- `add_executable(control_sim control_sim.cpp)` /
+  `target_link_libraries(control_sim ...)` 두 줄 제거.
+
+### 2. target_distance.cpp - 픽셀->실거리 변환 수정 필요 (고도 미반영)
+- 현재 `ground_offset_m = hypot(x_px, y_px) * pixel_to_meter`로, 고도와
+  무관하게 고정 배율만 곱해서 계산 중.
+- 실제로는 고도에 따라 카메라가 담는 지상 범위가 달라지므로, 같은 픽셀
+  오프셋이라도 고도가 높을수록 실거리는 커져야 함 - 지금 방식은 틀린 값을
+  낼 수 있음. 수정 필요.
+- 이 계산(고도 반영 픽셀->실거리 변환)은 `pos_calculator.cpp`가 담당해야
+  함 (현재 빈 파일). `control/README.md`에도 동일 내용 기록.
+- (같은 날 재확인) `pos_calculator.cpp`는 여전히 빈 파일. 실제 거리 계산은
+  `target_distance.cpp:236-238`의 고정 `pixel_to_meter` 곱셈이 유일한
+  구현 - **미해결**.
+
+### 3. 소프트웨어 고도 제한 (완료)
+- `setting/safety.yaml` 신설: `altitude_limit`
+  (`soft_limit_m: 4.0`, `hard_limit_m: 5.0`, `poll_rate_hz`,
+  `descent_speed_mps`, `recovery_margin_m`). "4~5m 제한" 요청을
+  soft/hard 두 단계 천장(ceiling fence)으로 해석함 - 바닥(하한)은 없음.
+- `check_alt.cpp`: 기존 고도-홀드 모니터에 soft/hard 판정과 전이 로그,
+  요약에 breach 샘플 카운트 추가. read-only 유지, 명령 전송 없음.
+- `emergency.cpp` (신규): `hard_limit_m` 초과 시 GUIDED로 전환 후 비례
+  하강 속도(`kGain`, `kMinDescent`~`descent_speed_mps` 클램프) 전송,
+  `hard_limit_m - recovery_margin_m` 아래로 내려올 때까지 유지(경계
+  채터링 방지).
+- `yaml_settings.hpp/.cpp`에 `load_safety_settings()` 추가
+  (`load_mavlink_settings()`와 동일한 실행파일-상대 경로 탐색),
+  `drone_lib.hpp/.cpp`에 위임 함수 추가. `CMakeLists.txt`에 `emergency`
+  타겟 등록. 전체 빌드 확인.
+
+### 4. cycle_ms를 두 개로 분리: sense_cycle_ms / control_cycle_ms (완료)
+- 기존엔 `target_track.cycle_ms`(50ms/20Hz) 하나를 `target_distance.cpp`
+  (YOLO 폴링 + ALTITUDE 요청 주기)와 `control.cpp`(Pixhawk 전송 주기)가
+  같이 읽어써서, YOLO 실측 처리량(~10fps)과 무관하게 감지 쪽도 20Hz로
+  억지로 돌던 문제.
+- `setting/MAVLink.yaml`: `sense_cycle_ms: 100`(target_distance.cpp),
+  `control_cycle_ms: 50`(control.cpp)로 분리. control.cpp의 20Hz 송신은
+  ArduPilot GUIDED가 꾸준한 setpoint 스트림을 원하기 때문에 그대로 유지.
+- `target_distance.cpp`: `Args::cycle_ms` -> `sense_cycle_ms`로 개명,
+  `--cycle-ms` 플래그도 `--sense-cycle-ms`로 변경. `control.cpp`는
+  `control_cycle_ms` 읽도록 수정. 빌드 확인.
+
+### 5. YOLO 타겟 연속-프레임 안정성 체크 (완료)
+- 기존 `target_stale_ms`(400ms)는 "최근성"만 보고 "연속 N프레임 동일
+  타겟" 확인이 없던 문제.
+- `YOLO_MODEL/yolo_live.py`: `TARGET_CONFIRM_FRAMES = 5` (placeholder),
+  `state["target_streak"]`(deque)로 `inferer()`에서 매 프레임 클래스명을
+  누적, 연속 5프레임이 같은 클래스로 잡혀야 `/target` 응답에
+  `"confirmed": true`. 검출 없음/클래스 변경 시 스트릭 리셋.
+- `target_distance.cpp`: `found`뿐 아니라 `confirmed`도 요구하도록 수정
+  (`json_bool(body, "confirmed")` 추가). 빌드 확인.
+
+### 6. safety.yaml 안전 기준 확장 + emergency.cpp LOITER 인계 (부분 완료)
+완료:
+- `safety.yaml`에 `battery_limit`(min_percent 20%), `heartbeat_limit`
+  (max_gap_sec 3초 - 최초 접속용 `heartbeat_timeout`과 별개로 비행 중
+  링크 끊김 감지), `gps_limit`(min_fix_type 3, min_satellites 6),
+  `vehicle_health_limit`(require_prearm_healthy, require_normal_state)
+  추가. 전부 미검증 placeholder 값.
+- `emergency.cpp`: 위 4개 중 하나라도 위반되면 `drone::set_mode("LOITER")`
+  로 전환. GUIDED가 필요한 altitude 보정보다 우선순위를 높이고, health
+  위반 중엔 altitude 보정을 억제해서 두 로직이 모드를 서로 뺏지 않게 함.
+
+미완료 / 확인 필요:
+- **EKF 상태확인 미구현.** `control/third_party/mavlink`에 벤더링된
+  MAVLink 서브셋엔 `EKF_STATUS_REPORT` 메시지 디코더 자체가 없음(확인
+  완료, 존재하지 않음). 지금은 `HEARTBEAT.system_status`가
+  `MAV_STATE_CRITICAL/EMERGENCY`인지로 대체 중 - ArduPilot이 EKF
+  failsafe 시 여기 반영하긴 하지만 EKF variance 직접 체크는 아님.
+  정확히 하려면 mavlink 헤더 재생성 필요.
+- "test_arm" 안전장치 해석: `SYS_STATUS.onboard_control_sensors_health`의
+  `MAV_SYS_STATUS_PREARM_CHECK` 비트로 임의 해석해서 구현함 - 의도와
+  맞는지 확인 필요.
+- battery/heartbeat/gps 임계값 전부 실측 없이 넣은 placeholder.
+- **"LOITER 전환 -> 타겟 재탐색 -> 접근 재개" 루프 미구현.** 대화로
+  요구사항 확정: LOITER는 최소 3초 유지 -> 이후 건강상태 정상 +
+  YOLO `confirmed` 재확인되면 다시 타겟 방향으로 이동. `control.cpp`/
+  `target_link.cpp`에 있는 접근(추적) 로직을 `emergency.cpp`에서도 쓸 수
+  있게 공용 함수로 분리하는 리팩터링이 선행되어야 함 - 아직 착수 전.
+  (관련해서, 이 루프가 도는 동안 `control.cpp`를 별도 프로세스로 계속
+  띄워둘지, `emergency.cpp` 자체가 두 역할을 다 흡수할지도 미정.)
+
+### 7. 추가 안전장치 아이디어만 제시, 구현은 보류 (미구현)
+- **control.cpp SIGINT(Ctrl+C) 핸들러**: 현재 `FinallyGuard`는 정상 함수
+  종료 경로만 커버(속도 0). 시그널 수신 시 `land() -> 착지(armed=false)
+  확인 폴링 -> 안되면 disarm` 순서로 안전 종료하는 핸들러 없음. 시그널
+  핸들러 안에서 직접 MAVLink 전송은 안전하지 않으므로, 핸들러는
+  `atomic<bool>` 플래그만 세우고 메인 루프가 처리하는 방식 제안.
+- **거리값 이상치(sanity) 체크**: `pixel_to_meter`가 미검증 상수라
+  오탐지로 픽셀 오프셋이 튀면 `distance_m`도 같이 튀어 그대로 속도
+  명령에 들어감. 프레임간 최대 변화량(slew limit) + 절대 상한 clamp,
+  벗어나면 스무딩 대신 그냥 `valid=0` 처리하는 방식 제안.
+- **미션 타임아웃 에스컬레이션 분리**: 지금 `approach_duration_sec`
+  초과는 `land()` 한 번뿐, 실패 시 재시도/RTL/최종 disarm 같은 단계적
+  대응이 없음. SIGINT 핸들러와 같은 `land_and_confirm()`류 공용 헬퍼로
+  묶어서 재사용하는 방식 제안.
+- **안전 이벤트 전용 로그**: 지금은 `mav.tlog`(바이너리)뿐이라 어떤
+  긴급 트리거가 언제 발동했는지 사후분석이 어려움. `check_alt.cpp`/
+  `emergency.cpp`에 이미 있는 상태전이 지점마다 JSONL 한 줄씩 남기는
+  방식 제안.
+
 ## 2026-08-06
 
 ### 1. YOLO 좌표계 정리 (cam_sets.yaml)
@@ -93,3 +200,18 @@
 - 빌드 중 `control_sim.cpp` 파일이 디스크에서 사라져 있는 걸 발견함
   (`CMakeLists.txt`엔 여전히 등록돼 있어 `make all`이 거기서 실패).
   이번 작업에서 건드린 적 없음 — 확인 필요.
+- (2026-08-08 추가) `setting/safety.yaml`의 `altitude_limit`,
+  `battery_limit`, `heartbeat_limit`, `gps_limit`,
+  `vehicle_health_limit`은 전부 실측 없이 넣은 placeholder 값. 실제
+  배터리/운용 환경 기준으로 튜닝 필요.
+- (2026-08-08 추가) `emergency.cpp`의 EKF 상태확인은 정식
+  `EKF_STATUS_REPORT`가 아니라 `HEARTBEAT.system_status` 대체 지표
+  (proxy)임. 정확한 EKF variance 체크가 필요하면
+  `control/third_party/mavlink` 헤더를 `EKF_STATUS_REPORT` 포함해서
+  재생성해야 함.
+- (2026-08-08 추가) `emergency.cpp`의 "test_arm" 안전장치는
+  `MAV_SYS_STATUS_PREARM_CHECK` 비트로 임의 해석해서 구현함 - 의도와
+  맞는지 확인 필요.
+- (2026-08-08 추가) 지금 픽스호크가 물리적으로 연결 안 돼 있어 이번
+  세션의 `emergency.cpp` 변경분(LOITER 인계 포함)은 SITL/실기 연결 후
+  검증 필요. "LOITER -> 재탐색 -> 접근 재개" 루프는 아직 미구현.
