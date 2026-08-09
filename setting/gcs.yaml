@@ -1,0 +1,10 @@
+# gcs/sender telemetry FEC settings.
+# dest_host is this laptop's current LAN IP -- it's DHCP-assigned and WILL
+# change; update it here before each test session (check with `ipconfig`
+# on the laptop / `ip addr` isn't relevant, this runs on the Jetson).
+telemetry:
+  dest_host: 192.168.0.190
+  dest_port: 15550   # see setting/port.yaml -> gcs_telem
+  lanes: 3            # interleave depth: groups in flight at once
+  group_size: 4        # data packets per group before a parity packet fires
+  rate_hz: 10

@@ -22,23 +22,37 @@ target_track:
   yolo_host: 127.0.0.1
   yolo_port: 8002          # must match setting/cam_sets.yaml's yolo_live port
   udp_port: 15020          # loopback link: target_distance.cpp -> control.cpp
-  # Placeholder gain (m of real-world offset per pixel of image offset),
-  # used to combine the target's pixel offset with altitude via Pythagoras.
-  # NOT derived from a measured camera FOV/focal length (none on file) -
-  # calibrate against a real target at a known distance/altitude before
-  # trusting the computed range for actual flight.
-  pixel_to_meter: 0.01
+  # Pinhole-camera model (control/pos_calculator.cpp): ground_offset_m =
+  # pixel_offset / pixel_focal_length_px * altitude_m. Replaces the old flat
+  # pixel_to_meter multiplier, which gave the same real-world distance for a
+  # given pixel offset no matter the altitude - wrong, since the same pixel
+  # offset covers more ground the higher up the camera is. 530 is a rough
+  # starting value, not derived from a measured focal length/FOV - calibrate
+  # against a real target at a known distance/altitude before trusting the
+  # computed range for actual flight.
+  pixel_focal_length_px: 530
   target_stale_ms: 400     # ignore a YOLO detection older than this
+  altitude_stale_ms: 500   # target_distance.cpp stops asserting altitude_valid past this
+  # Outlier guard on the computed distance_m (target_distance.cpp) - both
+  # placeholders, tune against this vehicle's real operating range.
+  max_plausible_distance_m: 50.0  # reject any single reading beyond this
+  max_distance_jump_m: 5.0        # reject a reading that jumps this far from the last accepted one
   link_stale_ms: 500       # control.cpp hovers if no UDP packet this recent
   max_forward_speed: 0.5   # m/s cap, control.cpp's approach velocity
-  max_lateral_speed: 0.5   # m/s cap, control.cpp's centering velocity
+  # Yaw-first guidance: control.cpp turns the vehicle to face the target
+  # (yaw_rate, capped at max_yaw_rate) instead of crab-walking sideways,
+  # and only opens up forward speed once roughly aligned - see
+  # control.cpp's approach_target() for the alignment taper.
+  max_yaw_rate: 0.6         # rad/s cap on the yaw-alignment turn rate
+  yaw_align_px: 80.0        # forward speed ramps in as |x_px offset| falls within this
   stop_distance: 2.0       # m; forward speed -> 0 once inside this range
+  target_lost_land_sec: 10.0  # control.cpp lands if the target stays lost this long
   approach_duration_sec: 60  # control.cpp lands automatically after this long
-  # 1.range calc -> 2.velocity calc -> 3.send-to-Pixhawk cycle period. Set to
-  # 20Hz for a smoother GUIDED velocity stream than the underlying data
-  # needs: YOLO_MODEL/yolo_live.py's own comments put YOLOv5n inference at
-  # IMG_SIZE=320 around ~10 fps on this Jetson Nano, so roughly every other
-  # 50ms tick re-sends the same target reading rather than a fresher one -
-  # that's fine (ArduPilot expects a steady setpoint stream and a repeated
-  # value is a valid one), but don't expect this alone to sharpen tracking.
-  cycle_ms: 50
+  # control.cpp's 1.range calc -> 2.velocity calc -> 3.send-to-Pixhawk cycle
+  # period. Deliberately kept faster than target_distance.cpp's own sensing
+  # rate (setting/rate.yaml's sense_cycle_ms): ArduPilot's GUIDED mode wants
+  # a steady velocity setpoint stream, and control.cpp already re-sends the
+  # last valid target reading between fresh ones (see target_stale_ms/
+  # link_stale_ms above), so this can run faster than the sensing side
+  # without needing fresher data every tick.
+  control_cycle_ms: 50

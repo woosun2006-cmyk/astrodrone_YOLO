@@ -10,6 +10,13 @@ struct TargetRangeMsg {
     uint32_t seq = 0;
     uint8_t valid = 0;  // altitude AND a fresh YOLO reading were both available this cycle
     uint8_t found = 0;  // a target is currently detected (subset of valid)
+    // A fresh ALTITUDE reading from the flight controller arrived within
+    // target_track.altitude_stale_ms - independent of `found`/`valid` above,
+    // which also require a target detection. altitude_m below holds the
+    // last known reading either way (for logging), but only trust it as
+    // current when this is 1: target_distance.cpp does NOT zero it out or
+    // stop sending on a stale reading, it just stops asserting freshness.
+    uint8_t altitude_valid = 0;
     float x_px = 0;     // target offset from image center, +right (setting/cam_sets.yaml coord_origin)
     float y_px = 0;     // target offset from image center, +up
     float altitude_m = 0;       // ALTITUDE.altitude_relative, m above home (same as check_alt.cpp)

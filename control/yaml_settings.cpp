@@ -108,7 +108,11 @@ YamlValue parse_yaml_file(const std::string& path) {
     return root;
 }
 
-YamlValue load_mavlink_settings() {
+namespace {
+
+// Resolves <repo_root>/setting/<filename>, where repo_root is the parent of
+// this executable's directory (control/), mirroring drone_lib.py.
+YamlValue load_setting_file(const std::string& filename) {
     char exe_path[PATH_MAX];
     ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
     std::string exe_dir;
@@ -120,11 +124,9 @@ YamlValue load_mavlink_settings() {
         exe_dir = ".";
     }
 
-    // Mirrors drone_lib.py: <repo_root>/setting/MAVLink.yaml, where repo_root
-    // is the parent of this file's directory (control/).
     std::string candidates[] = {
-        exe_dir + "/../../setting/MAVLink.yaml",   // build/<exe> layout
-        exe_dir + "/../setting/MAVLink.yaml",       // control/<exe> layout
+        exe_dir + "/../../setting/" + filename,  // build/<exe> layout
+        exe_dir + "/../setting/" + filename,      // control/<exe> layout
     };
     for (const auto& candidate : candidates) {
         std::ifstream probe(candidate);
@@ -132,5 +134,23 @@ YamlValue load_mavlink_settings() {
             return parse_yaml_file(candidate);
         }
     }
-    throw std::runtime_error("MAVLink.yaml not found relative to executable");
+    throw std::runtime_error(filename + " not found relative to executable");
+}
+
+}  // namespace
+
+YamlValue load_mavlink_settings() { return load_setting_file("MAVLink.yaml"); }
+
+YamlValue load_safety_settings() { return load_setting_file("safety.yaml"); }
+
+YamlValue load_port_settings() { return load_setting_file("port.yaml"); }
+
+YamlValue load_rate_settings() { return load_setting_file("rate.yaml"); }
+
+std::string with_port(const std::string& address, long port) {
+    size_t sep = address.find_last_of(':');
+    if (sep == std::string::npos) {
+        throw std::runtime_error("expected host:port in address: " + address);
+    }
+    return address.substr(0, sep + 1) + std::to_string(port);
 }

@@ -88,6 +88,12 @@ std::unique_ptr<MavConnection> g_master;
 
 YamlValue load_mavlink_settings() { return ::load_mavlink_settings(); }
 
+YamlValue load_safety_settings() { return ::load_safety_settings(); }
+
+YamlValue load_port_settings() { return ::load_port_settings(); }
+
+YamlValue load_rate_settings() { return ::load_rate_settings(); }
+
 MavConnection& connect(const std::string& address, double heartbeat_timeout) {
     g_master = open_connection(address);
     std::cout << "MAVLink heartbeat 대기 중: " << address << " (" << heartbeat_timeout
@@ -146,8 +152,10 @@ void send_velocity(double vx, double vy, double vz, double yaw_rate) {
     MavConnection& vehicle = require_connection();
     mavlink_message_t msg;
     // Mask selects velocity (vx,vy,vz) and yaw_rate only, ignoring
-    // position/acceleration/yaw fields -- same mask as drone_lib.py.
-    const uint16_t type_mask = 0b0000111111000111;
+    // position/acceleration/yaw fields. Bit 11 (YAW_RATE_IGNORE) must stay
+    // 0 here - it was previously 1, which silently dropped every yaw_rate
+    // this function was ever called with.
+    const uint16_t type_mask = 0b0000011111000111;
     mavlink_msg_set_position_target_local_ned_pack(
         kSourceSystem, kSourceComponent, &msg, 0, vehicle.target_system(),
         vehicle.target_component(), MAV_FRAME_LOCAL_NED, type_mask, 0, 0, 0,
@@ -159,7 +167,8 @@ void send_velocity(double vx, double vy, double vz, double yaw_rate) {
 void send_velocity_body(double vx, double vy, double vz, double yaw_rate) {
     MavConnection& vehicle = require_connection();
     mavlink_message_t msg;
-    const uint16_t type_mask = 0b0000111111000111;
+    // Same mask/fix as send_velocity() above - see its comment.
+    const uint16_t type_mask = 0b0000011111000111;
     mavlink_msg_set_position_target_local_ned_pack(
         kSourceSystem, kSourceComponent, &msg, 0, vehicle.target_system(),
         vehicle.target_component(), MAV_FRAME_BODY_OFFSET_NED, type_mask, 0, 0, 0,

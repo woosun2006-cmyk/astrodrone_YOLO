@@ -25,38 +25,31 @@
 
 ## control
 제어 프로그램 저장소
-현제 파이썬으로 되어 있는데, c/c++로 바꿔야 함.
 
-### drone-lib.py
+### drone-lib.cpp
 제어 프로그램에 필요한 함수 라이브러리 저장소
 
-### test-arm.py
+### test-arm.cpp
 arm/disarm 시동걸리는지 유무만 판단
 
-### check-link.py
+### check-link.cpp
  - 연결/상태 점검 도구
  - arm/모터 명령 없음
  - heartbeat, 배터리 전압, gps fix, 상태 메시지만 출력
 
-### control-sim.py
- - 시뮬레이션 목적('gazebo/mission planner' 에서 tcp:5760 으로 SITL 포트 열어야함)
- - wasd등 키보드로 비행 조작
-
-### control.py
+### control.cpp
  - 자동 비행 프로그램.
  - 비행 로직 담당.
 
-### PID.py
- - ardupilot 등의 오픈소스 사용.
- - 비행 시, 드론이 수평을 자동으로 맞출 수 있도록 제어 해 주는 프로그램
-
-### emergency.py
+### emergency.cpp
  - 긴급 상황 시, 드론 작동 메뉴얼에 관한 프로그램
  - '긴급 상황'이 어떤 상황인지는 ~/astro-drone/safety.yaml에서 정의
+** this is an old file, so it's needed to remove **
 
 ---
 
 ## test-cam
+** This is strictly for camera testing purposes. For actual flights, we won't host the server due to resource constraints. **
 
 ### camserver.py
 - 카메라 송출을 파이썬으로 함.
@@ -89,3 +82,4 @@ arm/disarm 시동걸리는지 유무만 판단
 ### prototype.pt
 제어 코드 짤 때, 욜로 모델이 필요하긴 해서 존재하는 파일. 실제로 사용할 애는 아닌데, 카메라 -> 객체인식 -> 위치 파악 -> 이동 의 로직을 구현 할 때 사용.
  ** 완전 쓰레기 모델은 아님.. **
+ ** It's currently lightened using TensorRT. **

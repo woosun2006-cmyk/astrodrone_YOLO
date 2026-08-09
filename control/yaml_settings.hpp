@@ -29,3 +29,21 @@ YamlValue parse_yaml_file(const std::string& path);
 // Resolves to <repo_root>/setting/MAVLink.yaml and parses it, mirroring
 // drone_lib.py's load_mavlink_settings().
 YamlValue load_mavlink_settings();
+
+// Resolves to <repo_root>/setting/safety.yaml and parses it (altitude
+// limits, etc.) -- same executable-relative lookup as load_mavlink_settings().
+YamlValue load_safety_settings();
+
+// Resolves to <repo_root>/setting/port.yaml and parses it (HTTP server
+// ports, MAVLink proxy ports) -- same executable-relative lookup as
+// load_mavlink_settings().
+YamlValue load_port_settings();
+
+// Resolves to <repo_root>/setting/rate.yaml and parses it (frame-rate /
+// polling-rate values shared with YOLO_MODEL/yolo_live.py) -- same
+// executable-relative lookup as load_mavlink_settings().
+YamlValue load_rate_settings();
+
+// Replaces the ":<port>" suffix of a "udp:host:port" / "tcp:host:port"
+// address with a different port, keeping the scheme and host as-is.
+std::string with_port(const std::string& address, long port);

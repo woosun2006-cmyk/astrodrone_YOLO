@@ -31,9 +31,15 @@ import yaml
 
 SETTING_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "setting")
 CAM_SETTINGS_PATH = os.path.join(SETTING_DIR, "cam_sets.yaml")
+RATE_SETTINGS_PATH = os.path.join(SETTING_DIR, "rate.yaml")
 
 with open(CAM_SETTINGS_PATH, encoding="utf-8") as f:
     _wb_correction = yaml.safe_load(f)["wb_correction"]
+
+with open(RATE_SETTINGS_PATH, encoding="utf-8") as f:
+    # Shared with control/target_distance.cpp - see setting/rate.yaml for
+    # why these two live together.
+    _rate = yaml.safe_load(f)
 
 # ---------------------------------------------------------------------------
 # SETTINGS - edit these
@@ -48,9 +54,18 @@ PORT = 8002                # camserver.py uses 8000, fpslog.py uses 8001;
                             # different port so all three can run at once
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-WEIGHTS = os.path.join(HERE, "prototype.pt")
+# TensorRT engine (control/README.md), built FP32 - not --half, see HALF's
+# comment below. DetectMultiBackend (yolov5/models/common.py) auto-detects
+# the .engine extension and loads it through the same torch.hub.load(...,
+# "custom", ...) call below as a .pt file would use, no other code here
+# needs to change for this swap.
+WEIGHTS = os.path.join(HERE, "prototype.engine")
 YOLOV5_ROOT = "/home/astro/yolov5"  # local clone; hubconf.py loads from here,
                                      # no network / torch.hub cache needed
+
+# inferer()'s own detection-rate cap, in fps - see setting/rate.yaml for why
+# this lives there instead of as a bare constant here.
+INFER_MAX_FPS = _rate["infer_max_fps"]
 
 IMG_SIZE = 320       # inference resolution. run_yolov5n.sh used 320 on this
                      # Jetson Nano for interactive fps; info.txt's accuracy
@@ -59,7 +74,20 @@ IMG_SIZE = 320       # inference resolution. run_yolov5n.sh used 320 on this
 DEFAULT_CONF = 0.25  # starting point only - drag the slider in the UI.
 HALF = False         # info.txt: FP16 collapsed accuracy on the dev GTX 1660
                      # SUPER (mAP50 0.995 -> 0.659). Unverified on this
-                     # Jetson's GPU - leave False until checked.
+                     # Jetson's GPU - leave False until checked. Only
+                     # affects a .pt weights path (calls model.model.half());
+                     # prototype.engine above was deliberately built FP32
+                     # (not --half) for the same reason, so this is doubly
+                     # moot until FP16 is actually verified safe here.
+
+# /target's age_ms only tells a consumer how *recent* a detection is, not
+# how *stable* it is - a single-frame misdetection is just as "fresh" as a
+# real target. TARGET_CONFIRM_FRAMES requires this many consecutive
+# inference passes to agree (found=True, same class) before /target reports
+# confirmed=True; consumers like control/target_distance.cpp should treat
+# confirmed=False the same as found=False. Placeholder value - tune against
+# this model's actual false-positive rate.
+TARGET_CONFIRM_FRAMES = 5
 
 # Jetson Nano + IMX219 via nvarguscamerasrc, same camera fpslog.py uses, but
 # through OpenCV/GStreamer (appsink) instead of a raw fdsink pipe, since we
@@ -95,7 +123,8 @@ model = None  # set once by _load_model(), read by inferer()
 state = {"raw_frame": None, "cap_times": deque(maxlen=30), "cap_count": 0,
          "frame": None, "infer_times": deque(maxlen=30), "last_dets": [],
          "last_latency_ms": 0.0, "cap": None,
-         "target": {"found": False, "t": 0.0}}
+         "target": {"found": False, "confirmed": False, "t": 0.0},
+         "target_streak": deque(maxlen=TARGET_CONFIRM_FRAMES)}
 cap_cond = threading.Condition()
 frame_cond = threading.Condition()
 stopping = threading.Event()
@@ -150,8 +179,16 @@ def inferer():
     render() draws boxes in place on the RGB view of the frame; since it's
     a view (frame[:, :, ::-1]), not a copy, the underlying buffer is shared
     with the BGR array we then re-flip for JPEG encoding - no extra copy.
+
+    Throttled to INFER_MAX_FPS (setting/rate.yaml) rather than running flat
+    out at whatever the model/camera can sustain: target_distance.cpp only
+    ever consumes a detection every sense_cycle_ms (same file), so inference
+    beyond roughly 2x that rate just burns GPU/thermal budget on results
+    nobody reads before they're superseded.
     """
     last = None
+    min_interval_sec = 1.0 / INFER_MAX_FPS
+    last_infer_start = 0.0
     while not stopping.is_set():
         with cap_cond:
             while state["raw_frame"] is last or state["raw_frame"] is None:
@@ -160,6 +197,11 @@ def inferer():
                     return
             frame = state["raw_frame"]
         last = frame
+
+        wait_sec = min_interval_sec - (time.monotonic() - last_infer_start)
+        if wait_sec > 0:
+            time.sleep(wait_sec)
+        last_infer_start = time.monotonic()
 
         with conf_lock:
             model.conf = conf_state["value"]
@@ -182,16 +224,20 @@ def inferer():
         # center-origin frame from ../setting/cam_sets.yaml (coord_origin:
         # center; +x right, +y up) - this is what target_distance.cpp polls
         # over /target to compute the target's offset from the camera axis.
+        multi = len(df) > 1
         if not df.empty:
             top = df.loc[df["confidence"].idxmax()]
             px = float(top["xmin"] + top["xmax"]) / 2.0
             py = float(top["ymin"] + top["ymax"]) / 2.0
-            target = {"found": True, "name": str(top["name"]),
+            top_name = str(top["name"])
+            target = {"found": True, "name": top_name,
                       "conf": round(float(top["confidence"]), 3),
                       "x_px": round(px - WIDTH / 2.0, 1),
-                      "y_px": round(HEIGHT / 2.0 - py, 1)}
+                      "y_px": round(HEIGHT / 2.0 - py, 1),
+                      "detections": len(df), "multi": multi}
         else:
-            target = {"found": False}
+            top_name = None
+            target = {"found": False, "detections": 0, "multi": False}
 
         now = time.monotonic()
         with frame_cond:
@@ -199,6 +245,22 @@ def inferer():
             state["infer_times"].append(now)
             state["last_dets"] = dets
             state["last_latency_ms"] = round(latency_ms, 1)
+
+            # None breaks the streak the same way a missing detection or a
+            # class change does. A multi-detection frame also counts as
+            # None for streak purposes: with two+ boxes in frame we can't
+            # tell if the top-confidence one is the same physical target
+            # frame-to-frame (could be swapping between look-alikes), so it
+            # can't be allowed to confirm a streak even though something
+            # was technically found.
+            streak = state["target_streak"]
+            streak.append(None if multi else top_name)
+            target["confirmed"] = (
+                not multi
+                and top_name is not None
+                and len(streak) == TARGET_CONFIRM_FRAMES
+                and all(n == top_name for n in streak)
+            )
             target["t"] = now
             state["target"] = target
             frame_cond.notify_all()

@@ -55,6 +55,9 @@ bool is_armed_from_heartbeat(const mavlink_heartbeat_t& hb);
 namespace drone {
 
 YamlValue load_mavlink_settings();
+YamlValue load_safety_settings();
+YamlValue load_port_settings();
+YamlValue load_rate_settings();
 
 // connect/set_mode/arm_disarm/... operate on a single module-level
 // connection, mirroring drone_lib.py's global `master`.

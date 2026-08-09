@@ -1,0 +1,24 @@
+# Frame-rate / polling-rate values shared across the target-approach
+# pipeline: YOLO_MODEL/yolo_live.py (Python, detection) and
+# control/target_distance.cpp (C++, range calc). Centralized here so the
+# two don't quietly drift out of sync when one gets tuned without the
+# other - see control/README.md for the full pipeline shape.
+
+# control/target_distance.cpp: how often it polls yolo_live.py's /target
+# endpoint and requests a fresh MAVLink ALTITUDE reading. This is the rate
+# the approach-control algorithm actually consumes new sensor data at -
+# control.cpp's own send-to-Pixhawk loop runs faster than this
+# (target_track.control_cycle_ms in setting/MAVLink.yaml) but just re-sends
+# the last valid reading between fresh ones.
+sense_cycle_ms: 100  # 10 Hz
+
+# YOLO_MODEL/yolo_live.py: inferer() loop's own detection-rate cap.
+# Deliberately about 2x sense_cycle_ms above, not the camera's max
+# (cam_sets.yaml's CAM_FPS=30): target_distance.cpp only ever consumes at
+# sense_cycle_ms's rate, so running inference any faster than ~2x that just
+# burns GPU/thermal budget on detections that get thrown away before
+# anyone reads them. 2x (rather than 1x) keeps a fresh-ish result on hand
+# no matter where in its own cycle target_distance.cpp's poll happens to
+# land, instead of occasionally re-reading a detection from just before
+# the last poll.
+infer_max_fps: 20

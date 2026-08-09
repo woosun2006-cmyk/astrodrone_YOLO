@@ -2,7 +2,10 @@
 // (altitude_relative, meters above home - same reference drone::takeoff()
 // uses) and reports how tightly the vehicle is holding around a reference
 // altitude: current deviation, min/max, stddev, and % of time within
-// tolerance. Read-only, sends no arm/motor commands.
+// tolerance. Also checks each reading against setting/safety.yaml's
+// altitude_limit (soft_limit_m / hard_limit_m) and flags SOFT/HARD breaches.
+// Read-only, sends no arm/motor commands -- emergency.cpp is what actually
+// enforces the hard limit by commanding the vehicle back down.
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -35,7 +38,25 @@ struct Args {
     double tolerance = 0.5;  // meters; |deviation| <= tolerance counts as "holding"
     double target = NAN;     // NAN = use the first reading as the reference
     double duration = 0;     // seconds; 0 = run until interrupted
+    double soft_limit_m = 4.0;  // setting/safety.yaml altitude_limit.soft_limit_m
+    double hard_limit_m = 5.0;  // setting/safety.yaml altitude_limit.hard_limit_m
 };
+
+enum class LimitStatus { kOk, kSoft, kHard };
+
+LimitStatus classify_altitude(double alt, double soft_limit_m, double hard_limit_m) {
+    if (alt >= hard_limit_m) return LimitStatus::kHard;
+    if (alt >= soft_limit_m) return LimitStatus::kSoft;
+    return LimitStatus::kOk;
+}
+
+const char* limit_status_label(LimitStatus status) {
+    switch (status) {
+        case LimitStatus::kHard: return "HARD-LIMIT";
+        case LimitStatus::kSoft: return "SOFT-LIMIT";
+        default: return "ok";
+    }
+}
 
 }  // namespace
 
@@ -47,6 +68,16 @@ int run(int argc, char** argv) {
     args.address = serial["address"].as_string();
     args.baud = static_cast<int>(serial["baud"].as_long());
     args.heartbeat_timeout = settings.get_double_or("heartbeat_timeout", 20);
+
+    try {
+        YamlValue alt_limit = drone::load_safety_settings()["altitude_limit"];
+        args.soft_limit_m = alt_limit.get_double_or("soft_limit_m", args.soft_limit_m);
+        args.hard_limit_m = alt_limit.get_double_or("hard_limit_m", args.hard_limit_m);
+    } catch (const std::exception& e) {
+        std::cerr << "Warning: could not load setting/safety.yaml altitude_limit (" << e.what()
+                   << "), using defaults soft=" << args.soft_limit_m << "m hard=" << args.hard_limit_m
+                   << "m." << std::endl;
+    }
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -111,6 +142,11 @@ int run(int argc, char** argv) {
     std::cout << "Streaming ALTITUDE at " << args.rate << " Hz, tolerance=+/-" << args.tolerance
               << "m" << (have_target ? "" : " (reference = first reading)") << ". Ctrl+C to stop."
               << std::endl;
+    std::cout << "Altitude limit: soft=" << args.soft_limit_m << "m hard=" << args.hard_limit_m
+              << "m (setting/safety.yaml altitude_limit)." << std::endl;
+
+    LimitStatus last_limit_status = LimitStatus::kOk;
+    long soft_samples = 0, hard_samples = 0;
 
     while (std::chrono::steady_clock::now() < deadline) {
         mavlink_message_t msg;
@@ -138,6 +174,23 @@ int run(int argc, char** argv) {
         double deviation = alt - target;
         bool holding = std::fabs(deviation) <= args.tolerance;
 
+        LimitStatus limit_status = classify_altitude(alt, args.soft_limit_m, args.hard_limit_m);
+        if (limit_status == LimitStatus::kSoft) ++soft_samples;
+        if (limit_status == LimitStatus::kHard) ++hard_samples;
+        if (limit_status != last_limit_status) {
+            if (limit_status == LimitStatus::kHard) {
+                std::cerr << "[BREACH] altitude " << std::fixed << std::setprecision(2) << alt
+                          << "m exceeded hard_limit_m " << args.hard_limit_m << "m." << std::endl;
+            } else if (limit_status == LimitStatus::kSoft) {
+                std::cerr << "[WARN] altitude " << std::fixed << std::setprecision(2) << alt
+                          << "m exceeded soft_limit_m " << args.soft_limit_m << "m." << std::endl;
+            } else if (last_limit_status != LimitStatus::kOk) {
+                std::cerr << "Altitude back under soft_limit_m (" << args.soft_limit_m << "m)."
+                          << std::endl;
+            }
+            last_limit_status = limit_status;
+        }
+
         if (sample_count == 0) {
             alt_min = alt_max = alt;
         } else {
@@ -161,7 +214,7 @@ int run(int argc, char** argv) {
                   << "m target=" << target << "m dev=" << std::showpos << deviation
                   << std::noshowpos << "m [" << (holding ? "HOLD " : "DRIFT") << "] min=" << alt_min
                   << " max=" << alt_max << " std=" << std::sqrt(variance) << " held=" << hold_pct
-                  << "%" << std::endl;
+                  << "% limit=" << limit_status_label(limit_status) << std::endl;
     }
 
     std::cout << "---" << std::endl;
@@ -170,6 +223,9 @@ int run(int argc, char** argv) {
               << "m, max=" << alt_max << "m, held="
               << (total_time > 0 ? (hold_time / total_time) * 100.0 : 100.0) << "% within +/-"
               << args.tolerance << "m of " << target << "m" << std::endl;
+    std::cout << "Altitude limit: soft_samples=" << soft_samples << ", hard_samples=" << hard_samples
+              << " (soft_limit_m=" << args.soft_limit_m << ", hard_limit_m=" << args.hard_limit_m
+              << ")" << std::endl;
 
     return 0;
 }

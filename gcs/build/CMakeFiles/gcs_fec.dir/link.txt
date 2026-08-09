@@ -1,0 +1,2 @@
+/usr/bin/ar qc libgcs_fec.a  CMakeFiles/gcs_fec.dir/sender/crc32.cpp.o CMakeFiles/gcs_fec.dir/sender/fec_encoder.cpp.o CMakeFiles/gcs_fec.dir/sender/udp_sender.cpp.o
+/usr/bin/ranlib libgcs_fec.a

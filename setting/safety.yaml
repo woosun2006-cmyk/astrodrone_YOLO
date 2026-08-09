@@ -1,0 +1,95 @@
+# All of the checks in this file are read and enforced by control.cpp
+# alone - it's the only process that ever sends MAVLink commands to the
+# vehicle. check_alt.cpp and emergency.cpp are separate, standalone,
+# read-only diagnostic tools (same fields, same thresholds) for a human to
+# run and watch in a terminal; they do not feed control.cpp anything.
+
+# Software altitude limit (a soft/hard "ceiling fence"). Values are
+# altitude_relative in meters -- meters above home, the same reference
+# drone::takeoff() and MAVLink ALTITUDE.altitude_relative use elsewhere in
+# this project. This is an extra, app-side check; it does NOT replace
+# ArduPilot's own fence (FENCE_* params).
+#
+# control.cpp actively sends a GUIDED descent command whenever
+# altitude_relative exceeds hard_limit_m, and keeps correcting until the
+# vehicle has come back down to hard_limit_m - recovery_margin_m
+# (hysteresis, so it doesn't chatter right at the boundary). check_alt.cpp
+# only logs a warning/breach at the same two thresholds.
+altitude_limit:
+  soft_limit_m: 4.0        # warn once altitude passes this
+  hard_limit_m: 5.0        # control.cpp: force a descent past this height
+  poll_rate_hz: 5          # ALTITUDE message request rate
+  descent_speed_mps: 0.5   # max corrective descent speed control.cpp sends
+  recovery_margin_m: 0.2   # keep correcting until alt <= hard_limit_m - this
+
+# The checks below are the non-altitude fail-safes. Unlike altitude_limit
+# (a corrective descent control.cpp can meter on its own), a breach of any
+# of these means "can no longer trust GUIDED tracking", so control.cpp
+# hands off to the flight controller's own LOITER mode (GPS position hold)
+# instead of trying to command a correction itself, and holds there for a
+# minimum time before resuming. Thresholds below are placeholders except
+# battery_limit.min_voltage_v - not validated against the real vehicle,
+# tune before relying on them.
+battery_limit:
+  min_percent: 20          # SYS_STATUS.battery_remaining (%). -1/unknown is
+                            # logged but not treated as a breach - an
+                            # unreported value can't be assumed safe *or*
+                            # unsafe.
+  min_voltage_v: 14.8       # SYS_STATUS.voltage_battery. 4S LiPo, 14.8V is
+                            # this pack's nominal (3.7V/cell) rating - under
+                            # load a real 4S sags below nominal well before
+                            # it's actually empty, so this may trip earlier
+                            # than expected. Confirm against real flight
+                            # logs and adjust (a common convention is
+                            # ~3.5V/cell = 14.0V for "start heading back",
+                            # ~3.3V/cell = 13.2V for "land now").
+
+heartbeat_limit:
+  # Ongoing link-loss check while already connected - different from
+  # MAVLink.yaml's heartbeat_timeout, which only guards the initial connect.
+  max_gap_sec: 3       # gap past this: LOITER (see vehicle_health_limit above)
+  land_gap_sec: 5       # gap past this: escalate straight to LAND and stop -
+                         # matches astroquad/uav-onboard's "heartbeat loss ==
+                         # highest-severity, don't just sit in LOITER hoping
+                         # the link comes back" stance. LAND is sent
+                         # best-effort even though the link is presumably the
+                         # thing that's broken - if it's only degraded
+                         # (intermittent loss) rather than fully dead, this
+                         # can still land through.
+
+gps_limit:
+  min_fix_type: 3          # GPS_RAW_INT.fix_type; 3 = 3D fix
+  min_satellites: 6
+
+# "test_arm" style health check: is the flight controller currently armed,
+# and is it currently in a state where an arm attempt would succeed. Reuses
+# the same SYS_STATUS/HEARTBEAT fields test_arm.cpp already inspects around
+# a one-shot arm attempt, but polled continuously instead of once.
+vehicle_health_limit:
+  require_prearm_healthy: true  # SYS_STATUS.onboard_control_sensors_health
+                                 # bit for MAV_SYS_STATUS_PREARM_CHECK - "is
+                                 # arming currently possible". A breach.
+  require_normal_state: true    # HEARTBEAT.system_status not
+                                 # MAV_STATE_CRITICAL/EMERGENCY. ArduPilot
+                                 # sets this on EKF and other internal
+                                 # failsafes. A breach.
+  # HEARTBEAT's armed flag (is_armed_from_heartbeat()) is read every cycle
+  # for visibility (시동이 걸려있는지) and for the separate unexpected-
+  # disarm watch in control.cpp (armed -> not armed mid-flight requests an
+  # immediate LAND - see control.cpp). Being armed itself is not a breach;
+  # it's the true -> false transition that matters.
+
+# EKF variance check, same approach astroquad/uav-onboard's SafetyMonitor
+# uses: ArduCopter only accepts GUIDED when the EKF's horizontal-position
+# and velocity innovation ratios are below ~1.0, so this predicts whether
+# GUIDED would actually be accepted instead of trusting flag bits alone.
+# EKF_STATUS_REPORT (id 193) is an ardupilotmega.xml message, not part of
+# the "common" dialect the rest of control/third_party/mavlink was vendored
+# from - added via control/third_party/mavlink/common/mavlink_msg_ekf_status_report.h,
+# generated from ardupilotmega.xml with pymavlink's mavgen (see that file's
+# top comment). Only enforced once the FC has sent at least one
+# EKF_STATUS_REPORT - not every firmware/config streams it, and an absent
+# reading can't be assumed good or bad.
+ekf_limit:
+  pos_horiz_variance_max: 1.0
+  velocity_variance_max: 1.0

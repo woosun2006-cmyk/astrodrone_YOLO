@@ -1,0 +1,4 @@
+/home/astro/astro-drone/gcs/build/CMakeFiles/rebuild_cache.dir
+/home/astro/astro-drone/gcs/build/CMakeFiles/edit_cache.dir
+/home/astro/astro-drone/gcs/build/CMakeFiles/gcs_fec.dir
+/home/astro/astro-drone/gcs/build/CMakeFiles/telem_sender.dir

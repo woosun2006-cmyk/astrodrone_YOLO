@@ -6,7 +6,7 @@
 // Combines two legs with the Pythagorean theorem each cycle:
 //   - the target's pixel offset from the image center (YOLO_MODEL/
 //     yolo_live.py's /target, in the setting/cam_sets.yaml coord_origin
-//     frame), scaled to meters by target_track.pixel_to_meter
+//     frame), scaled to meters by pos_calculator.cpp's pinhole-camera model
 //   - the vehicle's altitude above home from MAVLink ALTITUDE
 //     (altitude_relative), the same reading check_alt.cpp reports
 //
@@ -15,6 +15,7 @@
 // control.cpp's - the two are linked only by the UDP socket on
 // target_track.udp_port.
 #include <arpa/inet.h>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -27,6 +28,7 @@
 #include <unistd.h>
 
 #include "drone_lib.hpp"
+#include "pos_calculator.hpp"
 #include "target_link.hpp"
 
 namespace {
@@ -121,9 +123,21 @@ struct Args {
     std::string yolo_host = "127.0.0.1";
     int yolo_port = 8002;
     int udp_port = 15020;
-    double pixel_to_meter = 0.01;
+    double focal_length_px = 530;
     double target_stale_ms = 400;
-    double cycle_ms = 100;
+    double altitude_stale_ms = 500;
+    // Sanity bounds on the computed distance_m, both placeholders to tune
+    // against this vehicle's real operating range - a bad pixel detection
+    // or a corrupted altitude reading can otherwise turn into a huge
+    // straight-line distance that flows straight into control.cpp's
+    // forward-speed calc.
+    double max_plausible_distance_m = 50.0;   // absolute cap on any single reading
+    double max_distance_jump_m = 5.0;         // cap on change from the last accepted reading
+    // Paced to setting/rate.yaml's sense_cycle_ms, not control.cpp's
+    // control_cycle_ms (MAVLink.yaml) - this loop's natural rate is how
+    // often YOLO_MODEL/yolo_live.py is expected to have a fresh detection
+    // on hand, not the Pixhawk send rate.
+    double sense_cycle_ms = 100;
 };
 
 }  // namespace
@@ -133,20 +147,27 @@ int run(int argc, char** argv) {
     YamlValue track = settings["target_track"];
 
     Args args;
-    // Default to the same proxy_udp endpoint control.cpp connects through
-    // (not real.serial): the two programs run concurrently, and only the
-    // UDP proxy is a shared multi-listener endpoint - two processes opening
-    // the raw serial port at once would interleave/corrupt each other's
-    // parsed MAVLink stream.
-    args.mav_address = settings["real"]["proxy_udp"]["address"].as_string();
+    // Default to the proxy_udp endpoint, but on the "sensor" port rather
+    // than control.cpp's "control" port (not real.serial): the two programs
+    // run concurrently, and mav_transport.cpp's UdpTransport binds its port,
+    // so two processes sharing one port would steal each other's packets
+    // instead of both receiving the stream - see setting/port.yaml.
+    YamlValue ports = drone::load_port_settings();
+    args.mav_address = with_port(settings["real"]["proxy_udp"]["address"].as_string(),
+                                  ports.get_long_or("mavlink_sensor", 14551));
     args.mav_baud = 115200;
     args.heartbeat_timeout = settings.get_double_or("heartbeat_timeout", 20);
     args.yolo_host = track["yolo_host"].as_string();
     args.yolo_port = static_cast<int>(track.get_long_or("yolo_port", 8002));
     args.udp_port = static_cast<int>(track.get_long_or("udp_port", 15020));
-    args.pixel_to_meter = track.get_double_or("pixel_to_meter", 0.01);
+    args.focal_length_px = track.get_double_or("pixel_focal_length_px", 530);
     args.target_stale_ms = track.get_double_or("target_stale_ms", 400);
-    args.cycle_ms = track.get_double_or("cycle_ms", 100);
+    args.altitude_stale_ms = track.get_double_or("altitude_stale_ms", 500);
+    args.max_plausible_distance_m = track.get_double_or("max_plausible_distance_m", 50.0);
+    args.max_distance_jump_m = track.get_double_or("max_distance_jump_m", 5.0);
+    // Shared with YOLO_MODEL/yolo_live.py's infer_max_fps - see
+    // setting/rate.yaml for why the two live together.
+    args.sense_cycle_ms = drone::load_rate_settings().get_double_or("sense_cycle_ms", 100);
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -166,15 +187,21 @@ int run(int argc, char** argv) {
             args.yolo_port = std::stoi(next("--yolo-port"));
         } else if (arg == "--udp-port") {
             args.udp_port = std::stoi(next("--udp-port"));
-        } else if (arg == "--pixel-to-meter") {
-            args.pixel_to_meter = std::stod(next("--pixel-to-meter"));
-        } else if (arg == "--cycle-ms") {
-            args.cycle_ms = std::stod(next("--cycle-ms"));
+        } else if (arg == "--focal-length-px") {
+            args.focal_length_px = std::stod(next("--focal-length-px"));
+        } else if (arg == "--altitude-stale-ms") {
+            args.altitude_stale_ms = std::stod(next("--altitude-stale-ms"));
+        } else if (arg == "--max-plausible-distance-m") {
+            args.max_plausible_distance_m = std::stod(next("--max-plausible-distance-m"));
+        } else if (arg == "--max-distance-jump-m") {
+            args.max_distance_jump_m = std::stod(next("--max-distance-jump-m"));
+        } else if (arg == "--sense-cycle-ms") {
+            args.sense_cycle_ms = std::stod(next("--sense-cycle-ms"));
         }
     }
 
-    if (args.cycle_ms <= 0) {
-        std::cerr << "--cycle-ms must be greater than zero" << std::endl;
+    if (args.sense_cycle_ms <= 0) {
+        std::cerr << "--sense-cycle-ms must be greater than zero" << std::endl;
         return 2;
     }
 
@@ -186,21 +213,26 @@ int run(int argc, char** argv) {
     }
     std::cout << "Connected. Polling YOLO at http://" << args.yolo_host << ":" << args.yolo_port
               << "/target, publishing range on UDP 127.0.0.1:" << args.udp_port << " every "
-              << args.cycle_ms << " ms." << std::endl;
+              << args.sense_cycle_ms << " ms." << std::endl;
 
-    request_message_interval(*connection, MAVLINK_MSG_ID_ALTITUDE, 1000.0 / args.cycle_ms);
+    request_message_interval(*connection, MAVLINK_MSG_ID_ALTITUDE, 1000.0 / args.sense_cycle_ms);
 
     TargetRangeSender sender(args.udp_port);
     double altitude_m = 0.0;
-    bool have_altitude = false;
+    bool have_altitude = false;  // an ALTITUDE reading has arrived at least once
+    bool altitude_was_fresh = false;
+    auto last_altitude_time = std::chrono::steady_clock::now();
     uint32_t seq = 0;
+
+    // Outlier tracking for distance_m - see the rejection check below.
+    bool have_last_distance = false;
+    double last_accepted_distance_m = 0.0;
 
     // recv_match's timeout paces this loop (same pattern as check_alt.cpp):
     // ALTITUDE is requested at exactly this cycle's rate above, so blocking
     // here for up to one cycle is how we wait for "the next tick" instead of
-    // a separate sleep. If the flight controller hiccups for a tick, the
-    // last known altitude carries over below rather than the cycle stalling.
-    double cycle_sec = args.cycle_ms / 1000.0;
+    // a separate sleep.
+    double cycle_sec = args.sense_cycle_ms / 1000.0;
 
     while (true) {
         mavlink_message_t msg;
@@ -209,18 +241,45 @@ int run(int argc, char** argv) {
             mavlink_msg_altitude_decode(&msg, &alt);
             altitude_m = alt.altitude_relative;
             have_altitude = true;
+            last_altitude_time = std::chrono::steady_clock::now();
         }
+
+        // altitude_m above keeps the last known reading purely so the
+        // console line and CSV-adjacent logging below stay informative -
+        // out.altitude_valid is what tells control.cpp whether that number
+        // is still trustworthy. Past altitude_stale_ms with no new reading,
+        // it isn't: control.cpp must not act on a frozen value as if it
+        // were current (e.g. altitude-limit enforcement going blind while
+        // still reporting the last altitude it saw).
+        double altitude_age_ms = std::chrono::duration<double, std::milli>(
+                                      std::chrono::steady_clock::now() - last_altitude_time)
+                                      .count();
+        bool altitude_fresh = have_altitude && altitude_age_ms <= args.altitude_stale_ms;
+        if (altitude_was_fresh && !altitude_fresh) {
+            std::cerr << "[EMERGENCY] ALTITUDE stale: no reading for " << std::fixed
+                      << std::setprecision(0) << altitude_age_ms << "ms (> " << args.altitude_stale_ms
+                      << "ms) - reporting altitude as invalid until it recovers." << std::endl;
+        } else if (!altitude_was_fresh && altitude_fresh) {
+            std::cout << "ALTITUDE recovered." << std::endl;
+        }
+        altitude_was_fresh = altitude_fresh;
 
         TargetRangeMsg out{};
         out.seq = seq++;
         out.altitude_m = static_cast<float>(altitude_m);
+        out.altitude_valid = altitude_fresh ? 1 : 0;
 
         bool have_target = false;
         try {
             std::string body = http_get(args.yolo_host, args.yolo_port, "/target", 0.2);
             bool found = json_bool(body, "found");
+            // "found" is recency-only (this single frame saw something);
+            // "confirmed" is yolo_live.py's TARGET_CONFIRM_FRAMES-in-a-row
+            // stability check. Require both so a one-frame misdetection
+            // can't turn into a velocity command.
+            bool confirmed = json_bool(body, "confirmed");
             double age_ms = json_number(body, "age_ms");
-            if (found && !std::isnan(age_ms) && age_ms <= args.target_stale_ms) {
+            if (found && confirmed && !std::isnan(age_ms) && age_ms <= args.target_stale_ms) {
                 out.x_px = static_cast<float>(json_number(body, "x_px"));
                 out.y_px = static_cast<float>(json_number(body, "y_px"));
                 have_target = std::isfinite(out.x_px) && std::isfinite(out.y_px);
@@ -229,22 +288,52 @@ int run(int argc, char** argv) {
             std::cerr << "YOLO /target poll failed: " << e.what() << std::endl;
         }
 
-        out.found = have_target ? 1 : 0;
-        out.valid = (have_altitude && have_target) ? 1 : 0;
-
+        double ground_offset = 0.0, distance = 0.0;
         if (have_target) {
-            double ground_offset = std::hypot(out.x_px, out.y_px) * args.pixel_to_meter;
+            double pixel_offset = std::hypot(out.x_px, out.y_px);
+            ground_offset = pixel_offset_to_ground_m(pixel_offset, altitude_m, args.focal_length_px);
+            distance = std::hypot(ground_offset, altitude_m);
+
+            // Outlier rejection: a bad pixel detection or a corrupted
+            // altitude reading can produce a distance that's either way
+            // outside any plausible operating range, or a sudden jump from
+            // the last reading we trusted. Either way, don't let it reach
+            // control.cpp's velocity calc - treat this cycle the same as
+            // "no target found" instead of clamping and sending it anyway.
+            bool plausible = distance <= args.max_plausible_distance_m;
+            bool jump_ok = !have_last_distance ||
+                           std::fabs(distance - last_accepted_distance_m) <= args.max_distance_jump_m;
+            if (!plausible || !jump_ok) {
+                std::cerr << "[EMERGENCY] distance outlier rejected: " << std::fixed
+                          << std::setprecision(2) << distance << "m ("
+                          << (!plausible ? "exceeds max_plausible_distance_m="
+                                               + std::to_string(args.max_plausible_distance_m) + "m"
+                                         : "jumped " +
+                                               std::to_string(std::fabs(distance - last_accepted_distance_m)) +
+                                               "m from last accepted " +
+                                               std::to_string(last_accepted_distance_m) + "m")
+                          << ") - treating this cycle as target-not-found." << std::endl;
+                have_target = false;
+            } else {
+                last_accepted_distance_m = distance;
+                have_last_distance = true;
+            }
+        }
+
+        out.found = have_target ? 1 : 0;
+        out.valid = (altitude_fresh && have_target) ? 1 : 0;
+        if (have_target) {
             out.ground_offset_m = static_cast<float>(ground_offset);
-            out.distance_m = static_cast<float>(std::hypot(ground_offset, altitude_m));
+            out.distance_m = static_cast<float>(distance);
         }
 
         sender.send(out);
 
         std::cout << std::fixed << std::setprecision(2) << "alt=" << out.altitude_m
-                  << "m target=" << (out.found ? "yes" : "no ") << " x_px=" << out.x_px
-                  << " y_px=" << out.y_px << " ground=" << out.ground_offset_m
-                  << "m dist=" << out.distance_m << "m valid=" << static_cast<int>(out.valid)
-                  << std::endl;
+                  << "m (valid=" << static_cast<int>(out.altitude_valid) << ") target="
+                  << (out.found ? "yes" : "no ") << " x_px=" << out.x_px << " y_px=" << out.y_px
+                  << " ground=" << out.ground_offset_m << "m dist=" << out.distance_m
+                  << "m valid=" << static_cast<int>(out.valid) << std::endl;
     }
 }
 

@@ -3,3 +3,16 @@
 camserver: 8000   # test_cam/camserver.py   -> http://192.168.0.197:8000/
 fpslog: 8001      # test_cam/fpslog.py      -> http://192.168.0.197:8001/
 yolo_live: 8002   # YOLO_MODEL/yolo_live.py -> http://192.168.0.197:8002/
+
+# MAVLink UDP proxy ports (control/mav_transport.cpp's "udp:" transport
+# binds the port instead of just connecting to it, so two processes can't
+# share one without stealing each other's packets - see control/README.md).
+# The proxy (mavproxy/mavlink-router, started outside this repo) must be
+# configured to fan the Pixhawk stream out to both of these ports.
+mavlink_control: 14550  # control.cpp - the only process that arms/flies
+mavlink_sensor: 14551   # target_distance.cpp, emergency.cpp - read-only monitors
+
+# gcs/sender telem_sender - JSON telemetry + interleaved XOR-FEC UDP stream
+# (Jetson -> laptop GCS). Different range from the HTTP/MAVLink ports above
+# so nothing collides.
+gcs_telem: 15550
