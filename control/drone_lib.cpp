@@ -10,15 +10,67 @@ namespace {
 // commands -- 255/0 is pymavlink's default GCS-like source address.
 constexpr uint8_t kSourceSystem = 255;
 constexpr uint8_t kSourceComponent = 0;
+
+bool is_ardupilot_flight_controller_heartbeat(const mavlink_message_t& msg,
+                                               mavlink_heartbeat_t* decoded = nullptr) {
+    if (msg.msgid != MAVLINK_MSG_ID_HEARTBEAT || msg.sysid == 0 ||
+        msg.compid != MAV_COMP_ID_AUTOPILOT1) {
+        return false;
+    }
+
+    mavlink_heartbeat_t heartbeat{};
+    mavlink_msg_heartbeat_decode(&msg, &heartbeat);
+    if (heartbeat.autopilot != MAV_AUTOPILOT_ARDUPILOTMEGA ||
+        heartbeat.type == MAV_TYPE_GCS || heartbeat.type == MAV_TYPE_ONBOARD_CONTROLLER) {
+        return false;
+    }
+
+    if (decoded) *decoded = heartbeat;
+    return true;
+}
 }  // namespace
 
 MavConnection::MavConnection(std::unique_ptr<Transport> transport)
     : transport_(std::move(transport)) {}
 
+bool MavConnection::take_pending_match(const std::vector<uint32_t>& msg_ids,
+                                       mavlink_message_t& out) {
+    while (!pending_messages_.empty()) {
+        mavlink_message_t msg = pending_messages_.front();
+        pending_messages_.pop_front();
+        if (msg_ids.empty() ||
+            std::find(msg_ids.begin(), msg_ids.end(), msg.msgid) != msg_ids.end()) {
+            out = msg;
+            return true;
+        }
+    }
+    return false;
+}
+
+void MavConnection::observe_message(const mavlink_message_t& msg) {
+    if (!is_ardupilot_flight_controller_heartbeat(msg)) return;
+
+    if (target_system_ == 0 && target_component_ == 0) {
+        target_system_ = msg.sysid;
+        target_component_ = msg.compid;
+        return;
+    }
+
+    if ((msg.sysid != target_system_ || msg.compid != target_component_) &&
+        !target_conflict_logged_) {
+        std::cerr << "Ignoring HEARTBEAT from another ArduPilot target: system="
+                  << static_cast<int>(msg.sysid)
+                  << ", component=" << static_cast<int>(msg.compid) << std::endl;
+        target_conflict_logged_ = true;
+    }
+}
+
 bool MavConnection::recv_match(const std::vector<uint32_t>& msg_ids, mavlink_message_t& out,
                                 double timeout_sec) {
     using clock = std::chrono::steady_clock;
     auto deadline = clock::now() + std::chrono::duration<double>(timeout_sec);
+
+    if (take_pending_match(msg_ids, out)) return true;
 
     uint8_t buf[512];
     while (true) {
@@ -33,26 +85,40 @@ bool MavConnection::recv_match(const std::vector<uint32_t>& msg_ids, mavlink_mes
             mavlink_message_t msg;
             mavlink_status_t status;
             if (mavlink_parse_char(MAVLINK_COMM_0, buf[i], &msg, &status)) {
-                target_system_ = msg.sysid;
-                target_component_ = msg.compid;
-                if (msg_ids.empty() ||
-                    std::find(msg_ids.begin(), msg_ids.end(), msg.msgid) != msg_ids.end()) {
-                    out = msg;
-                    return true;
-                }
+                observe_message(msg);
+                pending_messages_.push_back(msg);
             }
         }
+        if (take_pending_match(msg_ids, out)) return true;
     }
 }
 
 bool MavConnection::wait_heartbeat(double timeout_sec, mavlink_heartbeat_t* out) {
-    mavlink_message_t msg;
-    if (!recv_match({MAVLINK_MSG_ID_HEARTBEAT}, msg, timeout_sec)) return false;
-    if (out) mavlink_msg_heartbeat_decode(&msg, out);
-    return true;
+    using clock = std::chrono::steady_clock;
+    const auto deadline = clock::now() + std::chrono::duration<double>(timeout_sec);
+
+    while (true) {
+        const auto now = clock::now();
+        if (now >= deadline) return false;
+
+        mavlink_message_t msg{};
+        const double remaining_sec = std::chrono::duration<double>(deadline - now).count();
+        if (!recv_match({MAVLINK_MSG_ID_HEARTBEAT}, msg, remaining_sec)) return false;
+
+        mavlink_heartbeat_t heartbeat{};
+        if (!is_ardupilot_flight_controller_heartbeat(msg, &heartbeat)) continue;
+        if (msg.sysid != target_system_ || msg.compid != target_component_) continue;
+
+        if (out) *out = heartbeat;
+        return true;
+    }
 }
 
 void MavConnection::send(const mavlink_message_t& msg) {
+    if (target_system_ == 0 || target_component_ == 0) {
+        throw std::runtime_error(
+            "MAVLink command target is not set; wait for a validated autopilot HEARTBEAT first.");
+    }
     uint8_t buf[MAVLINK_MAX_PACKET_LEN];
     uint16_t len = mavlink_msg_to_send_buffer(buf, &msg);
     transport_->write_bytes(buf, len);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <string>
 #include <vector>
@@ -22,8 +23,9 @@ class MavConnection {
 public:
     explicit MavConnection(std::unique_ptr<Transport> transport);
 
-    // Blocks until a HEARTBEAT is seen (updating target_system/component) or
-    // timeout_sec elapses. Returns false on timeout, matching
+    // Blocks until a validated ArduPilot flight-controller HEARTBEAT is seen
+    // (setting target_system/component on first discovery) or timeout_sec
+    // elapses. Returns false on timeout, matching
     // master.wait_heartbeat(timeout=...) returning None.
     bool wait_heartbeat(double timeout_sec, mavlink_heartbeat_t* out = nullptr);
 
@@ -38,9 +40,14 @@ public:
     uint8_t target_component() const { return target_component_; }
 
 private:
+    bool take_pending_match(const std::vector<uint32_t>& msg_ids, mavlink_message_t& out);
+    void observe_message(const mavlink_message_t& msg);
+
     std::unique_ptr<Transport> transport_;
+    std::deque<mavlink_message_t> pending_messages_;
     uint8_t target_system_ = 0;
     uint8_t target_component_ = 0;
+    bool target_conflict_logged_ = false;
 };
 
 // Opens a connection without waiting for a heartbeat, mirroring

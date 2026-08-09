@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.10)
 project(astro_drone_control CXX)
 
+option(BUILD_TESTS "Build offline unit and characterization tests" OFF)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(NOT CMAKE_BUILD_TYPE)
@@ -18,6 +20,9 @@ add_library(drone_lib STATIC
     target_link.cpp
 )
 target_include_directories(drone_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
+add_library(target_json STATIC target_json.cpp)
+target_include_directories(target_json PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 find_package(Threads REQUIRED)
 
@@ -40,4 +45,9 @@ add_executable(emergency emergency.cpp)
 target_link_libraries(emergency PRIVATE drone_lib Threads::Threads)
 
 add_executable(target_distance target_distance.cpp)
-target_link_libraries(target_distance PRIVATE drone_lib Threads::Threads)
+target_link_libraries(target_distance PRIVATE drone_lib target_json Threads::Threads)
+
+if(BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
