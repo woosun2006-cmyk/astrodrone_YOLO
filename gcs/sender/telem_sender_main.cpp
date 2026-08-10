@@ -93,6 +93,36 @@ struct VehicleState {
     bool have_heartbeat = false;
 };
 
+// Retries open_connection()+wait_heartbeat() until one succeeds or g_stop
+// is set (returns nullptr in that case). Both can throw (e.g. the serial
+// device node disappearing -- USB hiccup, cable wiggle) as well as just
+// time out without a heartbeat; either way this is a telemetry/debug feed,
+// not the flight-control link, so it should keep trying rather than take
+// the whole process down. Also called mid-run to reconnect after a read
+// error further down.
+std::unique_ptr<MavConnection> connect_mavlink(const YamlValue& serial, double heartbeat_timeout) {
+    while (!g_stop) {
+        try {
+            std::fprintf(stderr, "telem_sender: waiting for Pixhawk heartbeat on %s...\n",
+                         serial["address"].as_string().c_str());
+            auto mav = open_connection(serial["address"].as_string(),
+                                        static_cast<int>(serial["baud"].as_long()));
+            if (mav->wait_heartbeat(heartbeat_timeout)) {
+                std::fprintf(stderr, "telem_sender: connected (system=%d component=%d)\n",
+                             mav->target_system(), mav->target_component());
+                return mav;
+            }
+            std::fprintf(stderr, "telem_sender: no heartbeat within %.0fs, retrying...\n",
+                         heartbeat_timeout);
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "telem_sender: MAVLink connect failed (%s), retrying in 3s...\n",
+                         e.what());
+            std::this_thread::sleep_for(std::chrono::seconds(3));
+        }
+    }
+    return nullptr;
+}
+
 std::string make_telemetry_json(uint32_t seq, const VehicleState& vehicle,
                                  const TargetRangeMsg& target, bool have_target) {
     using namespace std::chrono;
@@ -139,16 +169,11 @@ int main() {
     std::fprintf(stderr, "telem_sender: -> %s:%ld lanes=%ld group_size=%ld rate=%ldhz\n",
                  dest_host.c_str(), dest_port, lanes, group_size, rate_hz);
 
-    std::fprintf(stderr, "telem_sender: waiting for Pixhawk heartbeat on %s...\n",
-                 serial["address"].as_string().c_str());
-    auto mav = open_connection(serial["address"].as_string(), static_cast<int>(serial["baud"].as_long()));
-    if (!mav->wait_heartbeat(heartbeat_timeout)) {
-        std::fprintf(stderr, "telem_sender: no Pixhawk heartbeat within %.0fs, aborting\n",
-                     heartbeat_timeout);
-        return 1;
+    auto mav = connect_mavlink(serial, heartbeat_timeout);
+    if (!mav) {
+        std::fprintf(stderr, "telem_sender: stopped before a Pixhawk connection was made\n");
+        return 0;
     }
-    std::fprintf(stderr, "telem_sender: connected (system=%d component=%d)\n",
-                 mav->target_system(), mav->target_component());
     request_message_interval(*mav, MAVLINK_MSG_ID_ALTITUDE, static_cast<double>(rate_hz));
 
     TargetRangeReceiver target_rx(static_cast<int>(target_udp_port));
@@ -173,19 +198,34 @@ int main() {
         // rate waiting for MAVLink; a message not seen this tick is just
         // picked up next tick (this feed is for status/debugging, not
         // control, so a tick or two of staleness is fine).
-        mavlink_message_t msg;
-        if (mav->recv_match({MAVLINK_MSG_ID_HEARTBEAT, MAVLINK_MSG_ID_ALTITUDE}, msg, poll_timeout_s)) {
-            if (msg.msgid == MAVLINK_MSG_ID_HEARTBEAT) {
-                mavlink_heartbeat_t hb;
-                mavlink_msg_heartbeat_decode(&msg, &hb);
-                vehicle.mode = mode_string(hb.custom_mode);
-                vehicle.armed = is_armed_from_heartbeat(hb);
-                vehicle.have_heartbeat = true;
+        //
+        // recv_match can throw if the underlying transport read fails (the
+        // serial device node disappearing mid-run -- USB unplug/reset is
+        // the real-world case this guards against). Reconnecting here
+        // rather than letting the exception escape is the whole point of
+        // this loop: a telemetry/debug feed should degrade (link_ok=false
+        // downstream) and keep trying, not take the process down.
+        try {
+            mavlink_message_t msg;
+            if (mav->recv_match({MAVLINK_MSG_ID_HEARTBEAT, MAVLINK_MSG_ID_ALTITUDE}, msg, poll_timeout_s)) {
+                if (msg.msgid == MAVLINK_MSG_ID_HEARTBEAT) {
+                    mavlink_heartbeat_t hb;
+                    mavlink_msg_heartbeat_decode(&msg, &hb);
+                    vehicle.mode = mode_string(hb.custom_mode);
+                    vehicle.armed = is_armed_from_heartbeat(hb);
+                    vehicle.have_heartbeat = true;
+                }
+                // ALTITUDE is requested above so target_distance.cpp (if
+                // also running) isn't the only consumer, but we don't
+                // decode it here -- target.altitude_m via TargetRangeMsg
+                // below already carries it, computed from the same stream.
             }
-            // ALTITUDE is requested above so target_distance.cpp (if also
-            // running) isn't the only consumer, but we don't decode it here
-            // -- target.altitude_m via TargetRangeMsg below already carries
-            // it, computed from the same message stream.
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "telem_sender: MAVLink read error (%s), reconnecting...\n", e.what());
+            vehicle.have_heartbeat = false;
+            mav = connect_mavlink(serial, heartbeat_timeout);
+            if (!mav) break;  // g_stop was set while reconnecting
+            request_message_interval(*mav, MAVLINK_MSG_ID_ALTITUDE, static_cast<double>(rate_hz));
         }
         if (target_rx.poll(target)) {
             have_target = true;

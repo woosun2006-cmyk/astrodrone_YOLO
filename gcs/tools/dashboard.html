@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>astro-drone GCS</title>
+<style>
+  :root {
+    --bg: #12161c; --panel: #1a1f28; --border: #2a303c; --text: #e6e9ef;
+    --dim: #8a93a3; --ok: #35c46a; --warn: #e0a72a; --bad: #e5484d;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, "Segoe UI", sans-serif; font-size: 14px;
+  }
+  header {
+    padding: 10px 16px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 12px;
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  #linkBadge {
+    padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: 600;
+  }
+  .badge-ok { background: rgba(53,196,106,0.15); color: var(--ok); }
+  .badge-bad { background: rgba(229,72,77,0.15); color: var(--bad); }
+  main { display: grid; grid-template-columns: 1fr 360px; gap: 12px; padding: 12px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px;
+  }
+  .video-panel img { width: 100%; display: block; border-radius: 4px; background: #000; }
+  .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .stat { padding: 8px 10px; background: #10141a; border-radius: 6px; }
+  .stat .label { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .stat .value { font-size: 20px; font-weight: 600; margin-top: 2px; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; }
+  .pill-armed { background: rgba(229,72,77,0.15); color: var(--bad); }
+  .pill-disarmed { background: rgba(138,147,163,0.15); color: var(--dim); }
+  .pill-detected { background: rgba(53,196,106,0.15); color: var(--ok); }
+  .pill-none { background: rgba(138,147,163,0.15); color: var(--dim); }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--dim); margin: 0 0 10px; }
+  .link-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; font-size: 12px; color: var(--dim); margin-top: 8px; }
+  .link-stats b { color: var(--text); }
+  .stale { color: var(--warn) !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>astro-drone GCS</h1>
+  <span id="linkBadge" class="badge-bad">연결 대기중</span>
+</header>
+<main>
+  <div class="panel video-panel">
+    <h2>영상 (YOLO live)</h2>
+    <img id="videoStream" alt="video stream">
+  </div>
+  <div class="panel">
+    <h2>상태</h2>
+    <div class="stat-grid">
+      <div class="stat"><div class="label">모드</div><div class="value" id="mode">--</div></div>
+      <div class="stat"><div class="label">Arm</div><div class="value" id="armed">--</div></div>
+      <div class="stat"><div class="label">고도</div><div class="value" id="alt">--</div></div>
+      <div class="stat"><div class="label">타겟</div><div class="value" id="target">--</div></div>
+    </div>
+    <h2 style="margin-top:16px">전송 링크</h2>
+    <div class="link-stats">
+      <div>delivered: <b id="lDelivered">0</b></div>
+      <div>recovered: <b id="lRecovered">0</b></div>
+      <div>lost: <b id="lLost">0</b></div>
+      <div>crc_fail: <b id="lCrcFail">0</b></div>
+    </div>
+  </div>
+</main>
+<script>
+async function loadConfig() {
+  const r = await fetch('/config');
+  const cfg = await r.json();
+  document.getElementById('videoStream').src = `http://${cfg.jetson_host}:${cfg.yolo_port}/stream`;
+}
+
+function fmt(v, digits) {
+  return (v === null || v === undefined) ? '--' : Number(v).toFixed(digits ?? 1);
+}
+
+function render(d) {
+  const t = d.telemetry || {};
+  const badge = document.getElementById('linkBadge');
+  const stale = d.age_ms === null || d.age_ms > 2000;
+
+  if (d.age_ms === null) {
+    badge.textContent = '연결 대기중';
+    badge.className = 'badge-bad';
+  } else if (stale) {
+    badge.textContent = `끊김 (${(d.age_ms/1000).toFixed(1)}s 전)`;
+    badge.className = 'badge-bad';
+  } else {
+    badge.textContent = `연결됨 (${Math.round(d.age_ms)}ms)`;
+    badge.className = 'badge-ok';
+  }
+
+  document.getElementById('mode').textContent = t.mode ?? '--';
+  document.getElementById('mode').classList.toggle('stale', stale);
+
+  const armedEl = document.getElementById('armed');
+  armedEl.innerHTML = t.armed
+    ? '<span class="pill pill-armed">ARMED</span>'
+    : '<span class="pill pill-disarmed">disarmed</span>';
+
+  document.getElementById('alt').textContent = t.alt_m != null ? fmt(t.alt_m, 2) + ' m' : '--';
+  document.getElementById('alt').classList.toggle('stale', stale);
+
+  const targetEl = document.getElementById('target');
+  if (t.target_detected === true) {
+    targetEl.innerHTML = `<span class="pill pill-detected">감지됨</span>` +
+      (t.target_distance_m != null ? ` ${fmt(t.target_distance_m,1)}m` : '');
+  } else if (t.target_detected === false) {
+    targetEl.innerHTML = '<span class="pill pill-none">없음</span>';
+  } else {
+    targetEl.textContent = '--';
+  }
+
+  document.getElementById('lDelivered').textContent = d.link.delivered ?? 0;
+  document.getElementById('lRecovered').textContent = d.link.recovered ?? 0;
+  document.getElementById('lLost').textContent = d.link.lost ?? 0;
+  document.getElementById('lCrcFail').textContent = d.link.crc_fail ?? 0;
+}
+
+function connectStream() {
+  // Push-based: the browser does nothing until the bridge actually has a
+  // new decoded telemetry message to send (see gcs_bridge.py's
+  // /telemetry/stream). No repeated polling.
+  const es = new EventSource('/telemetry/stream');
+  es.onmessage = (e) => render(JSON.parse(e.data));
+  es.onerror = () => {
+    document.getElementById('linkBadge').textContent = '브릿지 연결 끊김';
+    document.getElementById('linkBadge').className = 'badge-bad';
+    // EventSource auto-reconnects on its own; nothing else to do here.
+  };
+}
+
+loadConfig();
+connectStream();
+</script>
+</body>
+</html>
