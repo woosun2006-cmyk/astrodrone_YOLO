@@ -1,13 +1,30 @@
-// Phase-1 test harness: generates synthetic telemetry JSON at a fixed rate
-// and pushes it through FecEncoder -> UdpSender. Proves the FEC/transport
-// layer end to end; wiring real yolo_live.cpp/MAVLink data in is a later
-// phase (see gcs/PLAN.md).
+// Reads real vehicle/target state and pushes it through FecEncoder ->
+// UdpSender at rate_hz. See gcs/PLAN.md for the wire-format/FEC design.
+//
+// mode/armed come straight from MAVLink HEARTBEAT (this process opens the
+// Pixhawk serial port directly, like check_link.cpp/check_alt.cpp do).
+// altitude + target-detection state are NOT read independently here --
+// they're read from target_distance.cpp's existing TargetRangeMsg loopback
+// broadcast (control/target_link.hpp), which already fuses YOLO's /target
+// HTTP endpoint with a fresh ALTITUDE reading for control.cpp's own use.
+// Reusing that avoids a second HTTP client and a second ALTITUDE stream
+// request; it does mean this telemetry alt/target fields go stale if
+// target_distance.cpp isn't running.
+//
+// KNOWN LIMITATION: this opens setting/MAVLink.yaml's real.serial address
+// directly, the same way check_link.cpp/check_alt.cpp/target_distance.cpp
+// each already do. Only one process can reliably own that serial port at a
+// time -- fine for the standalone testing this was built for, but it WILL
+// contend with control.cpp/target_distance.cpp if run alongside them during
+// an actual flight. Fixing that for real needs the MAVLink relay
+// (mavlink-router fanning the serial stream out to setting/port.yaml's
+// mavlink_* UDP ports) that setting/port.yaml already documents but nothing
+// in this repo sets up yet.
 
 #include <unistd.h>
 #include <limits.h>
 
 #include <chrono>
-#include <cmath>
 #include <csignal>
 #include <cstdint>
 #include <cstdio>
@@ -16,6 +33,8 @@
 #include <string>
 #include <thread>
 
+#include "drone_lib.hpp"
+#include "target_link.hpp"
 #include "fec_encoder.hpp"
 #include "udp_sender.hpp"
 #include "yaml_settings.hpp"
@@ -48,15 +67,54 @@ YamlValue load_gcs_yaml() {
     throw std::runtime_error("gcs.yaml not found relative to executable");
 }
 
-std::string make_telemetry_json(uint32_t seq, double alt_m, bool target_detected,
-                                 const std::string& mode, bool armed) {
+// Same helper as check_alt.cpp's anonymous-namespace request_message_interval
+// -- not exported from that file, so duplicated here.
+void request_message_interval(MavConnection& connection, uint32_t message_id, double frequency_hz) {
+    int64_t interval_us = static_cast<int64_t>(1'000'000 / frequency_hz);
+    mavlink_message_t msg;
+    mavlink_msg_command_long_pack(255, 0, &msg, connection.target_system(),
+                                   connection.target_component(), MAV_CMD_SET_MESSAGE_INTERVAL, 0,
+                                   static_cast<float>(message_id), static_cast<float>(interval_us),
+                                   0, 0, 0, 0, 0);
+    connection.send(msg);
+}
+
+// Same helper as check_link.cpp's anonymous-namespace mode_string.
+std::string mode_string(uint32_t custom_mode) {
+    for (const auto& entry : copter_mode_mapping()) {
+        if (entry.second == custom_mode) return entry.first;
+    }
+    return "Mode(" + std::to_string(custom_mode) + ")";
+}
+
+struct VehicleState {
+    std::string mode = "UNKNOWN";
+    bool armed = false;
+    bool have_heartbeat = false;
+};
+
+std::string make_telemetry_json(uint32_t seq, const VehicleState& vehicle,
+                                 const TargetRangeMsg& target, bool have_target) {
     using namespace std::chrono;
     const auto ts_ms =
         duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
     std::ostringstream os;
-    os << "{\"seq\":" << seq << ",\"ts_ms\":" << ts_ms << ",\"alt_m\":" << alt_m
-       << ",\"target_detected\":" << (target_detected ? "true" : "false") << ",\"mode\":\""
-       << mode << "\"" << ",\"armed\":" << (armed ? "true" : "false") << "}";
+    os << "{\"seq\":" << seq << ",\"ts_ms\":" << ts_ms << ",\"mode\":\"" << vehicle.mode << "\""
+       << ",\"armed\":" << (vehicle.armed ? "true" : "false")
+       << ",\"link_ok\":" << (vehicle.have_heartbeat ? "true" : "false");
+    if (have_target && target.altitude_valid) {
+        os << ",\"alt_m\":" << target.altitude_m;
+    } else {
+        os << ",\"alt_m\":null";
+    }
+    if (have_target && target.valid) {
+        os << ",\"target_detected\":" << (target.found ? "true" : "false")
+           << ",\"target_x_px\":" << target.x_px << ",\"target_y_px\":" << target.y_px
+           << ",\"target_distance_m\":" << target.distance_m;
+    } else {
+        os << ",\"target_detected\":null";
+    }
+    os << "}";
     return os.str();
 }
 
@@ -73,35 +131,81 @@ int main() {
     const long group_size = telem.get_long_or("group_size", 4);
     const long rate_hz = telem.get_long_or("rate_hz", 10);
 
+    YamlValue mav_cfg = drone::load_mavlink_settings();
+    YamlValue serial = mav_cfg["real"]["serial"];
+    const double heartbeat_timeout = mav_cfg.get_double_or("heartbeat_timeout", 20);
+    const long target_udp_port = mav_cfg["target_track"].get_long_or("udp_port", 15020);
+
     std::fprintf(stderr, "telem_sender: -> %s:%ld lanes=%ld group_size=%ld rate=%ldhz\n",
                  dest_host.c_str(), dest_port, lanes, group_size, rate_hz);
+
+    std::fprintf(stderr, "telem_sender: waiting for Pixhawk heartbeat on %s...\n",
+                 serial["address"].as_string().c_str());
+    auto mav = open_connection(serial["address"].as_string(), static_cast<int>(serial["baud"].as_long()));
+    if (!mav->wait_heartbeat(heartbeat_timeout)) {
+        std::fprintf(stderr, "telem_sender: no Pixhawk heartbeat within %.0fs, aborting\n",
+                     heartbeat_timeout);
+        return 1;
+    }
+    std::fprintf(stderr, "telem_sender: connected (system=%d component=%d)\n",
+                 mav->target_system(), mav->target_component());
+    request_message_interval(*mav, MAVLINK_MSG_ID_ALTITUDE, static_cast<double>(rate_hz));
+
+    TargetRangeReceiver target_rx(static_cast<int>(target_udp_port));
 
     gcs::UdpSender udp(dest_host, static_cast<uint16_t>(dest_port));
     gcs::FecEncoder enc(static_cast<uint8_t>(lanes), static_cast<uint8_t>(group_size),
                          [&udp](const uint8_t* data, size_t len) { udp.send(data, len); });
 
     const auto period = std::chrono::microseconds(1000000 / rate_hz);
+    const double poll_timeout_s = std::min(0.02, 1.0 / static_cast<double>(rate_hz) / 4.0);
+
+    VehicleState vehicle;
+    TargetRangeMsg target{};
+    bool have_target = false;
+
     uint32_t seq = 0;
     uint32_t sent_count = 0;
     while (!g_stop) {
         const auto next_tick = std::chrono::steady_clock::now() + period;
 
-        const double alt_m = 10.0 + 2.0 * std::sin(seq * 0.05);
-        const bool target = (seq % 37) < 5;
-        const std::string payload = make_telemetry_json(seq, alt_m, target, "GUIDED", true);
+        // Opportunistic, short-timeout drain -- doesn't block the telemetry
+        // rate waiting for MAVLink; a message not seen this tick is just
+        // picked up next tick (this feed is for status/debugging, not
+        // control, so a tick or two of staleness is fine).
+        mavlink_message_t msg;
+        if (mav->recv_match({MAVLINK_MSG_ID_HEARTBEAT, MAVLINK_MSG_ID_ALTITUDE}, msg, poll_timeout_s)) {
+            if (msg.msgid == MAVLINK_MSG_ID_HEARTBEAT) {
+                mavlink_heartbeat_t hb;
+                mavlink_msg_heartbeat_decode(&msg, &hb);
+                vehicle.mode = mode_string(hb.custom_mode);
+                vehicle.armed = is_armed_from_heartbeat(hb);
+                vehicle.have_heartbeat = true;
+            }
+            // ALTITUDE is requested above so target_distance.cpp (if also
+            // running) isn't the only consumer, but we don't decode it here
+            // -- target.altitude_m via TargetRangeMsg below already carries
+            // it, computed from the same message stream.
+        }
+        if (target_rx.poll(target)) {
+            have_target = true;
+        }
 
+        const std::string payload = make_telemetry_json(seq, vehicle, target, have_target);
         enc.submit(reinterpret_cast<const uint8_t*>(payload.data()),
                    static_cast<uint16_t>(payload.size()));
 
         ++sent_count;
         if (sent_count % (static_cast<uint32_t>(rate_hz) * 5) == 0) {
-            std::fprintf(stderr, "telem_sender: sent %u messages\n", sent_count);
+            std::fprintf(stderr, "telem_sender: sent %u messages (mode=%s armed=%d)\n", sent_count,
+                         vehicle.mode.c_str(), vehicle.armed);
         }
 
         ++seq;
         std::this_thread::sleep_until(next_tick);
     }
 
+    enc.flush();
     std::fprintf(stderr, "telem_sender: stopped after %u messages\n", sent_count);
     return 0;
 }

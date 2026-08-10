@@ -136,6 +136,114 @@ telem_sender/fast:
 	$(MAKE) -f CMakeFiles/telem_sender.dir/build.make CMakeFiles/telem_sender.dir/build
 .PHONY : telem_sender/fast
 
+home/astro/astro-drone/control/drone_lib.o: home/astro/astro-drone/control/drone_lib.cpp.o
+
+.PHONY : home/astro/astro-drone/control/drone_lib.o
+
+# target to build an object file
+home/astro/astro-drone/control/drone_lib.cpp.o:
+	$(MAKE) -f CMakeFiles/telem_sender.dir/build.make CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/drone_lib.cpp.o
+.PHONY : home/astro/astro-drone/control/drone_lib.cpp.o
+
+home/astro/astro-drone/control/drone_lib.i: home/astro/astro-drone/control/drone_lib.cpp.i
+
+.PHONY : home/astro/astro-drone/control/drone_lib.i
+
+# target to preprocess a source file
+home/astro/astro-drone/control/drone_lib.cpp.i:
+	$(MAKE) -f CMakeFiles/telem_sender.dir/build.make CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/drone_lib.cpp.i
+.PHONY : home/astro/astro-drone/control/drone_lib.cpp.i
+
+home/astro/astro-drone/control/drone_lib.s: home/astro/astro-drone/control/drone_lib.cpp.s
+
+.PHONY : home/astro/astro-drone/control/drone_lib.s
+
+# target to generate assembly for a file
+home/astro/astro-drone/control/drone_lib.cpp.s:
+	$(MAKE) -f CMakeFiles/telem_sender.dir/build.make CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/drone_lib.cpp.s
+.PHONY : home/astro/astro-drone/control/drone_lib.cpp.s
+
+home/astro/astro-drone/control/mav_transport.o: home/astro/astro-drone/control/mav_transport.cpp.o
+
+.PHONY : home/astro/astro-drone/control/mav_transport.o
+
+# target to build an object file
+home/astro/astro-drone/control/mav_transport.cpp.o:
+	$(MAKE) -f CMakeFiles/telem_sender.dir/build.make CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/mav_transport.cpp.o
+.PHONY : home/astro/astro-drone/control/mav_transport.cpp.o
+
+home/astro/astro-drone/control/mav_transport.i: home/astro/astro-drone/control/mav_transport.cpp.i
+
+.PHONY : home/astro/astro-drone/control/mav_transport.i
+
+# target to preprocess a source file
+home/astro/astro-drone/control/mav_transport.cpp.i:
+	$(MAKE) -f CMakeFiles/telem_sender.dir/build.make CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/mav_transport.cpp.i
+.PHONY : home/astro/astro-drone/control/mav_transport.cpp.i
+
+home/astro/astro-drone/control/mav_transport.s: home/astro/astro-drone/control/mav_transport.cpp.s
+
+.PHONY : home/astro/astro-drone/control/mav_transport.s
+
+# target to generate assembly for a file
+home/astro/astro-drone/control/mav_transport.cpp.s:
+	$(MAKE) -f CMakeFiles/telem_sender.dir/build.make CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/mav_transport.cpp.s
+.PHONY : home/astro/astro-drone/control/mav_transport.cpp.s
+
+home/astro/astro-drone/control/pos_calculator.o: home/astro/astro-drone/control/pos_calculator.cpp.o
+
+.PHONY : home/astro/astro-drone/control/pos_calculator.o
+
+# target to build an object file
+home/astro/astro-drone/control/pos_calculator.cpp.o:
+	$(MAKE) -f CMakeFiles/telem_sender.dir/build.make CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/pos_calculator.cpp.o
+.PHONY : home/astro/astro-drone/control/pos_calculator.cpp.o
+
+home/astro/astro-drone/control/pos_calculator.i: home/astro/astro-drone/control/pos_calculator.cpp.i
+
+.PHONY : home/astro/astro-drone/control/pos_calculator.i
+
+# target to preprocess a source file
+home/astro/astro-drone/control/pos_calculator.cpp.i:
+	$(MAKE) -f CMakeFiles/telem_sender.dir/build.make CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/pos_calculator.cpp.i
+.PHONY : home/astro/astro-drone/control/pos_calculator.cpp.i
+
+home/astro/astro-drone/control/pos_calculator.s: home/astro/astro-drone/control/pos_calculator.cpp.s
+
+.PHONY : home/astro/astro-drone/control/pos_calculator.s
+
+# target to generate assembly for a file
+home/astro/astro-drone/control/pos_calculator.cpp.s:
+	$(MAKE) -f CMakeFiles/telem_sender.dir/build.make CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/pos_calculator.cpp.s
+.PHONY : home/astro/astro-drone/control/pos_calculator.cpp.s
+
+home/astro/astro-drone/control/target_link.o: home/astro/astro-drone/control/target_link.cpp.o
+
+.PHONY : home/astro/astro-drone/control/target_link.o
+
+# target to build an object file
+home/astro/astro-drone/control/target_link.cpp.o:
+	$(MAKE) -f CMakeFiles/telem_sender.dir/build.make CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/target_link.cpp.o
+.PHONY : home/astro/astro-drone/control/target_link.cpp.o
+
+home/astro/astro-drone/control/target_link.i: home/astro/astro-drone/control/target_link.cpp.i
+
+.PHONY : home/astro/astro-drone/control/target_link.i
+
+# target to preprocess a source file
+home/astro/astro-drone/control/target_link.cpp.i:
+	$(MAKE) -f CMakeFiles/telem_sender.dir/build.make CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/target_link.cpp.i
+.PHONY : home/astro/astro-drone/control/target_link.cpp.i
+
+home/astro/astro-drone/control/target_link.s: home/astro/astro-drone/control/target_link.cpp.s
+
+.PHONY : home/astro/astro-drone/control/target_link.s
+
+# target to generate assembly for a file
+home/astro/astro-drone/control/target_link.cpp.s:
+	$(MAKE) -f CMakeFiles/telem_sender.dir/build.make CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/target_link.cpp.s
+.PHONY : home/astro/astro-drone/control/target_link.cpp.s
+
 home/astro/astro-drone/control/yaml_settings.o: home/astro/astro-drone/control/yaml_settings.cpp.o
 
 .PHONY : home/astro/astro-drone/control/yaml_settings.o
@@ -281,6 +389,18 @@ help:
 	@echo "... edit_cache"
 	@echo "... gcs_fec"
 	@echo "... telem_sender"
+	@echo "... home/astro/astro-drone/control/drone_lib.o"
+	@echo "... home/astro/astro-drone/control/drone_lib.i"
+	@echo "... home/astro/astro-drone/control/drone_lib.s"
+	@echo "... home/astro/astro-drone/control/mav_transport.o"
+	@echo "... home/astro/astro-drone/control/mav_transport.i"
+	@echo "... home/astro/astro-drone/control/mav_transport.s"
+	@echo "... home/astro/astro-drone/control/pos_calculator.o"
+	@echo "... home/astro/astro-drone/control/pos_calculator.i"
+	@echo "... home/astro/astro-drone/control/pos_calculator.s"
+	@echo "... home/astro/astro-drone/control/target_link.o"
+	@echo "... home/astro/astro-drone/control/target_link.i"
+	@echo "... home/astro/astro-drone/control/target_link.s"
 	@echo "... home/astro/astro-drone/control/yaml_settings.o"
 	@echo "... home/astro/astro-drone/control/yaml_settings.i"
 	@echo "... home/astro/astro-drone/control/yaml_settings.s"

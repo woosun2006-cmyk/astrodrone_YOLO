@@ -105,20 +105,124 @@ CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/yaml_settings.cpp.o.p
 CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/yaml_settings.cpp.o.provides.build: CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/yaml_settings.cpp.o
 
 
+CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/drone_lib.cpp.o: CMakeFiles/telem_sender.dir/flags.make
+CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/drone_lib.cpp.o: /home/astro/astro-drone/control/drone_lib.cpp
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/home/astro/astro-drone/gcs/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Building CXX object CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/drone_lib.cpp.o"
+	/usr/bin/c++  $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -o CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/drone_lib.cpp.o -c /home/astro/astro-drone/control/drone_lib.cpp
+
+CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/drone_lib.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Preprocessing CXX source to CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/drone_lib.cpp.i"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/astro/astro-drone/control/drone_lib.cpp > CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/drone_lib.cpp.i
+
+CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/drone_lib.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Compiling CXX source to assembly CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/drone_lib.cpp.s"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/astro/astro-drone/control/drone_lib.cpp -o CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/drone_lib.cpp.s
+
+CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/drone_lib.cpp.o.requires:
+
+.PHONY : CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/drone_lib.cpp.o.requires
+
+CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/drone_lib.cpp.o.provides: CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/drone_lib.cpp.o.requires
+	$(MAKE) -f CMakeFiles/telem_sender.dir/build.make CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/drone_lib.cpp.o.provides.build
+.PHONY : CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/drone_lib.cpp.o.provides
+
+CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/drone_lib.cpp.o.provides.build: CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/drone_lib.cpp.o
+
+
+CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/mav_transport.cpp.o: CMakeFiles/telem_sender.dir/flags.make
+CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/mav_transport.cpp.o: /home/astro/astro-drone/control/mav_transport.cpp
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/home/astro/astro-drone/gcs/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "Building CXX object CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/mav_transport.cpp.o"
+	/usr/bin/c++  $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -o CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/mav_transport.cpp.o -c /home/astro/astro-drone/control/mav_transport.cpp
+
+CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/mav_transport.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Preprocessing CXX source to CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/mav_transport.cpp.i"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/astro/astro-drone/control/mav_transport.cpp > CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/mav_transport.cpp.i
+
+CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/mav_transport.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Compiling CXX source to assembly CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/mav_transport.cpp.s"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/astro/astro-drone/control/mav_transport.cpp -o CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/mav_transport.cpp.s
+
+CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/mav_transport.cpp.o.requires:
+
+.PHONY : CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/mav_transport.cpp.o.requires
+
+CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/mav_transport.cpp.o.provides: CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/mav_transport.cpp.o.requires
+	$(MAKE) -f CMakeFiles/telem_sender.dir/build.make CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/mav_transport.cpp.o.provides.build
+.PHONY : CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/mav_transport.cpp.o.provides
+
+CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/mav_transport.cpp.o.provides.build: CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/mav_transport.cpp.o
+
+
+CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/target_link.cpp.o: CMakeFiles/telem_sender.dir/flags.make
+CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/target_link.cpp.o: /home/astro/astro-drone/control/target_link.cpp
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/home/astro/astro-drone/gcs/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Building CXX object CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/target_link.cpp.o"
+	/usr/bin/c++  $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -o CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/target_link.cpp.o -c /home/astro/astro-drone/control/target_link.cpp
+
+CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/target_link.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Preprocessing CXX source to CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/target_link.cpp.i"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/astro/astro-drone/control/target_link.cpp > CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/target_link.cpp.i
+
+CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/target_link.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Compiling CXX source to assembly CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/target_link.cpp.s"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/astro/astro-drone/control/target_link.cpp -o CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/target_link.cpp.s
+
+CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/target_link.cpp.o.requires:
+
+.PHONY : CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/target_link.cpp.o.requires
+
+CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/target_link.cpp.o.provides: CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/target_link.cpp.o.requires
+	$(MAKE) -f CMakeFiles/telem_sender.dir/build.make CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/target_link.cpp.o.provides.build
+.PHONY : CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/target_link.cpp.o.provides
+
+CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/target_link.cpp.o.provides.build: CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/target_link.cpp.o
+
+
+CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/pos_calculator.cpp.o: CMakeFiles/telem_sender.dir/flags.make
+CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/pos_calculator.cpp.o: /home/astro/astro-drone/control/pos_calculator.cpp
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/home/astro/astro-drone/gcs/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Building CXX object CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/pos_calculator.cpp.o"
+	/usr/bin/c++  $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -o CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/pos_calculator.cpp.o -c /home/astro/astro-drone/control/pos_calculator.cpp
+
+CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/pos_calculator.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Preprocessing CXX source to CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/pos_calculator.cpp.i"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/astro/astro-drone/control/pos_calculator.cpp > CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/pos_calculator.cpp.i
+
+CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/pos_calculator.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Compiling CXX source to assembly CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/pos_calculator.cpp.s"
+	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/astro/astro-drone/control/pos_calculator.cpp -o CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/pos_calculator.cpp.s
+
+CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/pos_calculator.cpp.o.requires:
+
+.PHONY : CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/pos_calculator.cpp.o.requires
+
+CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/pos_calculator.cpp.o.provides: CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/pos_calculator.cpp.o.requires
+	$(MAKE) -f CMakeFiles/telem_sender.dir/build.make CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/pos_calculator.cpp.o.provides.build
+.PHONY : CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/pos_calculator.cpp.o.provides
+
+CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/pos_calculator.cpp.o.provides.build: CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/pos_calculator.cpp.o
+
+
 # Object files for target telem_sender
 telem_sender_OBJECTS = \
 "CMakeFiles/telem_sender.dir/sender/telem_sender_main.cpp.o" \
-"CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/yaml_settings.cpp.o"
+"CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/yaml_settings.cpp.o" \
+"CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/drone_lib.cpp.o" \
+"CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/mav_transport.cpp.o" \
+"CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/target_link.cpp.o" \
+"CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/pos_calculator.cpp.o"
 
 # External object files for target telem_sender
 telem_sender_EXTERNAL_OBJECTS =
 
 telem_sender: CMakeFiles/telem_sender.dir/sender/telem_sender_main.cpp.o
 telem_sender: CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/yaml_settings.cpp.o
+telem_sender: CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/drone_lib.cpp.o
+telem_sender: CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/mav_transport.cpp.o
+telem_sender: CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/target_link.cpp.o
+telem_sender: CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/pos_calculator.cpp.o
 telem_sender: CMakeFiles/telem_sender.dir/build.make
 telem_sender: libgcs_fec.a
 telem_sender: CMakeFiles/telem_sender.dir/link.txt
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --bold --progress-dir=/home/astro/astro-drone/gcs/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Linking CXX executable telem_sender"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --bold --progress-dir=/home/astro/astro-drone/gcs/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_7) "Linking CXX executable telem_sender"
 	$(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/telem_sender.dir/link.txt --verbose=$(VERBOSE)
 
 # Rule to build all files generated by this target.
@@ -128,6 +232,10 @@ CMakeFiles/telem_sender.dir/build: telem_sender
 
 CMakeFiles/telem_sender.dir/requires: CMakeFiles/telem_sender.dir/sender/telem_sender_main.cpp.o.requires
 CMakeFiles/telem_sender.dir/requires: CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/yaml_settings.cpp.o.requires
+CMakeFiles/telem_sender.dir/requires: CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/drone_lib.cpp.o.requires
+CMakeFiles/telem_sender.dir/requires: CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/mav_transport.cpp.o.requires
+CMakeFiles/telem_sender.dir/requires: CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/target_link.cpp.o.requires
+CMakeFiles/telem_sender.dir/requires: CMakeFiles/telem_sender.dir/home/astro/astro-drone/control/pos_calculator.cpp.o.requires
 
 .PHONY : CMakeFiles/telem_sender.dir/requires
 

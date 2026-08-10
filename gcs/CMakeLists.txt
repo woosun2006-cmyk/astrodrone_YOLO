@@ -25,5 +25,9 @@ add_library(gcs_fec STATIC
 add_executable(telem_sender
     sender/telem_sender_main.cpp
     ../control/yaml_settings.cpp
+    ../control/drone_lib.cpp
+    ../control/mav_transport.cpp
+    ../control/target_link.cpp
+    ../control/pos_calculator.cpp
 )
 target_link_libraries(telem_sender PRIVATE gcs_fec Threads::Threads)
