@@ -89,6 +89,15 @@ HALF = False         # info.txt: FP16 collapsed accuracy on the dev GTX 1660
 # this model's actual false-positive rate.
 TARGET_CONFIRM_FRAMES = 5
 
+# /target's age_ms only tells a consumer how *recent* a detection is, not
+# how *stable* it is - a single-frame misdetection is just as "fresh" as a
+# real target. TARGET_CONFIRM_FRAMES requires this many consecutive
+# inference passes to agree (found=True, same class) before /target reports
+# confirmed=True; consumers like control/target_distance.cpp should treat
+# confirmed=False the same as found=False. Placeholder value - tune against
+# this model's actual false-positive rate.
+TARGET_CONFIRM_FRAMES = 5
+
 # Jetson Nano + IMX219 via nvarguscamerasrc, same camera fpslog.py uses, but
 # through OpenCV/GStreamer (appsink) instead of a raw fdsink pipe, since we
 # need numpy frames for the model rather than a JPEG byte stream. Pipeline

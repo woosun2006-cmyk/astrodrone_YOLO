@@ -29,6 +29,7 @@
 
 #include "drone_lib.hpp"
 #include "pos_calculator.hpp"
+#include "target_json.hpp"
 #include "target_link.hpp"
 
 namespace {
@@ -90,30 +91,6 @@ std::string http_get(const std::string& host, int port, const std::string& path,
     size_t body_start = response.find("\r\n\r\n");
     if (body_start == std::string::npos) throw std::runtime_error("malformed HTTP response");
     return response.substr(body_start + 4);
-}
-
-// Pulls a numeric field out of yolo_live.py's flat /target JSON (no nested
-// objects/arrays, so a substring search is enough - see the endpoint in
-// YOLO_MODEL/yolo_live.py). Returns NaN if the key is absent or null.
-double json_number(const std::string& body, const std::string& key) {
-    std::string needle = "\"" + key + "\":";
-    size_t pos = body.find(needle);
-    if (pos == std::string::npos) return NAN;
-    pos += needle.size();
-    size_t end = body.find_first_of(",}", pos);
-    std::string token = body.substr(pos, end - pos);
-    try {
-        return std::stod(token);
-    } catch (...) {
-        return NAN;
-    }
-}
-
-bool json_bool(const std::string& body, const std::string& key) {
-    std::string needle = "\"" + key + "\":";
-    size_t pos = body.find(needle);
-    if (pos == std::string::npos) return false;
-    return body.compare(pos + needle.size(), 4, "true") == 0;
 }
 
 struct Args {
@@ -231,7 +208,8 @@ int run(int argc, char** argv) {
     // recv_match's timeout paces this loop (same pattern as check_alt.cpp):
     // ALTITUDE is requested at exactly this cycle's rate above, so blocking
     // here for up to one cycle is how we wait for "the next tick" instead of
-    // a separate sleep.
+    // a separate sleep. If the flight controller hiccups for a tick, the
+    // last known altitude carries over below rather than the cycle stalling.
     double cycle_sec = args.sense_cycle_ms / 1000.0;
 
     while (true) {
@@ -272,16 +250,16 @@ int run(int argc, char** argv) {
         bool have_target = false;
         try {
             std::string body = http_get(args.yolo_host, args.yolo_port, "/target", 0.2);
-            bool found = json_bool(body, "found");
+            bool found = target_json::json_bool(body, "found").value_or(false);
             // "found" is recency-only (this single frame saw something);
             // "confirmed" is yolo_live.py's TARGET_CONFIRM_FRAMES-in-a-row
             // stability check. Require both so a one-frame misdetection
             // can't turn into a velocity command.
-            bool confirmed = json_bool(body, "confirmed");
-            double age_ms = json_number(body, "age_ms");
+            bool confirmed = target_json::json_bool(body, "confirmed").value_or(false);
+            double age_ms = target_json::json_number(body, "age_ms").value_or(NAN);
             if (found && confirmed && !std::isnan(age_ms) && age_ms <= args.target_stale_ms) {
-                out.x_px = static_cast<float>(json_number(body, "x_px"));
-                out.y_px = static_cast<float>(json_number(body, "y_px"));
+                out.x_px = static_cast<float>(target_json::json_number(body, "x_px").value_or(NAN));
+                out.y_px = static_cast<float>(target_json::json_number(body, "y_px").value_or(NAN));
                 have_target = std::isfinite(out.x_px) && std::isfinite(out.y_px);
             }
         } catch (const std::exception& e) {
