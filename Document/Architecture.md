@@ -13,6 +13,66 @@
 
 ---
 
+## 업데이트 (2026-08-11)
+
+> 아래는 위 분석 기준(`81b6b6e`, 08-08) 이후 실제로 바뀐 부분의 요약이다.
+> 본문(1~11장)의 서술은 대부분 08-08 시점 그대로 남겨뒀으니, 특정 절이
+> 이 업데이트로 무효화됐는지는 아래 표를 먼저 확인할 것. 자세한 경위는
+> `Document/developinglogMJ.md`의 2026-08-09~2026-08-11 항목 참고.
+
+**[현재 확인]** 08-08 이후 실제로 구현/변경된 것:
+
+- **1.3, 2.1, 3.4-#10 무효화**: `pos_calculator.cpp`는 더 이상 빈 파일이
+  아니다. 고도 무관 고정 배율(`pixel_to_meter`) 대신 고도를 반영하는
+  핀홀 카메라 모델(`pixel_offset_to_ground_m()`)을 구현했다
+  (`control/pos_calculator.cpp`/`.hpp`, `control/README.md` 2026-08-09
+  항목). `target_track.pixel_focal_length_px`(기본 530)는 여전히
+  미검증 placeholder - 실측 캘리브레이션 필요는 그대로 **[미확정]**.
+- **1.2, 1.3, 3.1 일부 무효화**: `check_link.cpp`/`check_alt.cpp`/
+  `emergency.cpp`/`get_gps_location.cpp`/`test_arm.cpp`가 `control/`
+  에서 `health-check/`로 분리됐다(별도 CMake 프로젝트). `control/`은
+  이제 비행 관련(`control`, `target_distance`) + 신규 `mavlink_proxy`만
+  남았다.
+- **1.4, 5.4, 6장 부분 실현**: `control --auto-intercept` 플래그로
+  "AUTO 감시 → confirmed target 시 GUIDED 요격 → 유실/시간초과 시 AUTO
+  복귀" 흐름을 최초로 구현했다(`control.cpp`의 `run_auto_intercept()`/
+  `wait_for_auto_armed()`/`wait_for_lock()`, `approach_target()`의
+  `resume_mode` 파라미터). **단, 5장 상태머신(7개 상태, ACK 상관관계,
+  mission index 추적)이나 6장의 `ControlLocked`/RC takeover 판별은
+  전혀 구현하지 않았다** - 지금 구현은 "confirmed target까지 대기 →
+  GUIDED → 원래 모드로 복귀"만 하는 단순 루프이고, 5.4의 SITL 검증
+  항목(mission index, ACK evidence, `MIS_RESTART` 비교 등)과 6장
+  전체는 여전히 **[설계 제안]/[미확정]**으로 유효하다. 플래그 없이
+  실행하면 1.4가 서술하는 기존 동작(GUIDED·ARM·이륙 직접 실행) 그대로다.
+- **1.5, 2.2, 3.1, 3.3 무효화**: `real.serial.address`가 문서 작성 시점
+  `/dev/ttyACM0`였는데, 실측 결과(보드 교체로 USB enumeration 순서가
+  바뀜) 현재는 `/dev/ttyACM1` - 이 값은 연결된 보드에 따라 계속 바뀔 수
+  있어 실행 전 확인 필요. `setting/port.yaml`에 `mavlink_gcs: 14552`
+  신설.
+- **2.2, 3.3 무효화(부분)**: "`real.proxy_udp`를 쓰려면 외부 MAVLink
+  router/proxy가 필요해 보이지만 저장소에 없다"는 지적이 실제로 발생한
+  문제였음을 확인했다(`target_distance`가 heartbeat 타임아웃으로 계속
+  종료됨) - `control/mavlink_proxy.cpp`(신규)로 자체 구현해 메꿨다.
+  시리얼을 혼자 열고 `mavlink_control`(14550)/`mavlink_sensor`(14551)/
+  `mavlink_gcs`(14552) UDP로 fan-out한다. 3.3이 우려한 "여러 프로세스가
+  동일 포트에 bind"는 애초에 프로세스마다 다른 포트(14550 vs
+  14551)를 쓰고 있어 그 형태로는 발생하지 않았지만, "MAVLink 소유자를
+  한 프로세스로 제한"이라는 3.3의 **[설계 제안]** 자체는 이번에 처음
+  실현됐다 - 단 이 구현은 바이트 단위 라운드로빈 릴레이로, 실제
+  mavlink-router 대비 지연/처리량/장시간 안정성이 검증되지 않은 자체
+  제작품이다.
+- **신규**: `gcs/sender/telem_sender_main.cpp`(GCS 텔레메트리 송신,
+  이 문서 분석 이후 추가된 코드라 3장 표에 없음)도 원래 시리얼을 직접
+  열어 다른 프로세스와 경합했는데, 이번에 `mavlink_gcs` 프록시 포트로
+  전환했다. `YOLO_MODEL/cpp/yolo_headless.cpp`(신규, `yolo_live.cpp`의
+  브라우저 대시보드 페이지만 뺀 버전, `/target`·`/stream`은 유지)도
+  이 문서 분석 이후 추가된 실행 파일이다.
+- **git**: 위 항목 중 `control --auto-intercept` 관련 부분만
+  `control_program_test1` 브랜치에 커밋/푸시됨. 나머지(mavlink_proxy,
+  telem_sender 수정, yolo_headless, 포트/설정 변경)는 로컬에만 있다.
+
+---
+
 ## 1. 현재 구조 요약
 
 ### 1.1 Git 이력
@@ -60,7 +120,9 @@ Git 이력상 프로젝트는 다음 순서로 발전했다.
 | `test_arm`         | 모드 변경 및 ARM/DISARM 시험                                                  |
 | `yolo_live.py`     | 카메라 캡처, YOLO 추론, 검출 안정화, `/target` HTTP 응답                      |
 
-`pos_calculator.cpp`는 비어 있으며 빌드 대상도 아니다.
+`pos_calculator.cpp`는 비어 있으며 빌드 대상도 아니다. **[2026-08-11
+갱신 - 위 "업데이트" 절 참고: 더 이상 사실이 아님, 핀홀 카메라 모델
+구현됨]**
 
 ### 1.4 현재 미션 동작
 
@@ -129,6 +191,8 @@ control/target_distance.cpp
   - x_px, y_px 읽기
   - Pixhawk ALTITUDE 수신
   - pixel_to_meter 고정 배율로 ground_offset 계산
+    (**[2026-08-11 갱신]** 위 "업데이트" 절 참고 - 이제 고도 반영
+    핀홀 카메라 모델(`pos_calculator.cpp`)로 교체됨)
   - distance = hypot(ground_offset, altitude)
   ↓ localhost UDP :15020
 control/target_link.cpp

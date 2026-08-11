@@ -1,5 +1,143 @@
 # Developing Log (MJ)
 
+## 2026-08-11
+
+### 1. control.cpp - AUTO 요격 모드(`--auto-intercept`) 추가 (완료)
+목표: 픽스호크가 (조종기/GCS로 이미 arm되어) AUTO 모드로 자체 미션을 날고
+있는 상태를 지켜보다가, YOLO가 타겟을 확정 인식하면 그때만 GUIDED로
+가로채 접근하고, 놓치거나 시간이 지나면 다시 AUTO로 돌려주는 흐름.
+기존 "control.cpp가 직접 arm/이륙까지 다 하는" 흐름과는 별도 경로로
+공존시킴(플래그로 선택).
+
+- `apply_health_message()` (신규): 기존 `approach_target()` 안에 인라인
+  으로 있던 SYS_STATUS/GPS_RAW_INT/EKF_STATUS_REPORT/HEARTBEAT 파싱을
+  공용 함수로 분리 - 아래 `wait_for_lock()`도 같은 판정 기준을 써야
+  하므로, 로직이 두 곳에서 갈라지면 위험한 안전 체크 특성상 하나로
+  합침.
+- `approach_target()`: 반환 타입을 `void` -> `ApproachOutcome{kLanded,
+  kHandedBack}`로 변경, `resume_mode` 파라미터 추가(기본값 빈 문자열 -
+  기존 자가이륙 흐름은 동작 100% 그대로). `resume_mode`가 채워져 있으면
+  (요격 흐름) 타겟 로스트/시간초과 시 LAND 대신 그 모드(AUTO)로 복귀.
+  heartbeat 유실/예상치 못한 disarm은 요격 여부와 무관하게 항상 LAND
+  (하드 결함이라 미션 복귀가 의미 없음).
+- `wait_for_auto_armed()` / `wait_for_lock()` / `run_auto_intercept()`
+  (신규): 각각 "AUTO+armed 대기" / "그 상태에서 타겟이
+  `lock_confirm_sec` 이상 안정적으로 잡히고 건강상태도 정상일 때까지
+  감시" / 위 둘을 엮은 메인 루프(대기->락확인->GUIDED 전환->
+  approach_target(resume_mode="AUTO")->복귀 후 쿨다운->재대기 반복).
+- `main()`: `--auto-intercept` 인자로 분기. 이 경로에서는 GUIDED 전환/
+  arm/takeoff를 전혀 하지 않음.
+- `setting/MAVLink.yaml` `target_track`에 신규 키 3개: `lock_confirm_sec`
+  (1.0), `intercept_approach_duration_sec`(30), `reacquire_cooldown_sec`
+  (3.0).
+- 빌드 확인(경고 없음). 실제 AUTO 미션으로는 아직 테스트 못함(아래
+  확인할 것 참고).
+
+### 2. scripts/ 신설 - health_check.sh / run_YOLO.sh / full_mission.sh (완료, 여러 차례 조정)
+`control/` 밑에 실행 스크립트가 없어서 새로 만듦. 처음엔 프로그램 개수
+만큼 스크립트를 만들었다가("왜 이렇게 많냐" 지적받고) 요청받은 3개로
+정리:
+- **`health_check.sh`**: `health-check/`(다른 세션에서 이미 `control/`의
+  진단 프로그램 5개를 분리해놓은 상태였음 - `check_alt`/`check_link`/
+  `emergency`/`get_gps_location`/`test_arm`)에서 자동 게이트에 쓸 것만
+  선별 - `check_link`(연결/heartbeat/배터리/gps)와 `emergency`
+  (safety.yaml 기준 BREACH 여부). `test_arm`은 실제로 모터에 arm 신호를
+  보내는 프로그램이라 자동 스크립트에서 명시적으로 제외.
+- **`run_YOLO.sh`**: YOLO만 단독 실행하는 수동 테스트용.
+- **`full_mission.sh`**: 처음엔 health_check -> yolo -> target_distance
+  -> control을 곧바로 순서대로 다 띄웠는데, "욜로가 아직 아무것도
+  못 잡았는데 거리계산/픽스호크 연결까지 미리 켜놓을 필요 없다"는
+  지적을 받아 구조 변경 - health_check 통과 후 욜로만 먼저 띄우고,
+  `/target`의 `confirmed:true`를 가볍게 폴링하며 대기하다가, 확정되면
+  그때 target_distance/control을 띄우는 구조로 수정. (자세한 최종
+  순서는 4번 항목 참고 - 그 사이 mavlink_proxy/telem_sender가 추가됨.)
+
+### 3. YOLO_MODEL/cpp/yolo_headless.cpp 신설 - 실비행용 (완료, 방향 한 번 정정)
+`full_mission.sh`가 쓰던 `yolo_live.cpp`는 브라우저 대시보드+영상
+스트리밍까지 포함된 프로그램이라, 매 프레임 박스 그리기+JPEG 인코딩이
+아무도 안 보고 있어도 무조건 도는 구조 - 실비행 중 젯슨 리소스 낭비라는
+지적으로 새로 분리.
+- 처음 버전: `draw_detections()`/`cv::imencode()`/`/stream`/`/`(대시보드)
+  전부 제거, `/target`(target_distance.cpp가 쓰는 것)만 유지.
+- **방향 정정**: "헤드리스"는 "젯슨에 사람이 붙어서 보는 서버(대시보드
+  페이지)가 필요 없다"는 뜻이었지, "영상 자체가 필요 없다"는 뜻이
+  아니었음 - 노트북 쪽 GCS(`gcs/tools/gcs_bridge.py`/`dashboard.html`,
+  아직 미완성)가 `/stream`을 직접 받아서 그리는 구조(`gcs/PLAN.md`:
+  "화면을 그리는 것은 노트북에서 담당하고, jetson은 json형태의 파일로만
+  줌")이므로 `/stream`은 다시 복원. 최종적으로 뺀 건 `/`(브라우저용
+  대시보드 HTML/JS) 하나뿐 - `/target`, `/stream`, `/conf`, `/start`,
+  `/stop`, `/data`는 `yolo_live.cpp`와 동일하게 유지.
+- `YOLO_MODEL/cpp/run_yolo_headless.sh` 빌드/실행 스크립트,
+  `CMakeLists.txt`에 `yolo_headless` 타겟 등록.
+- 빌드 확인(경고 없음), 실제 실행해서 `/target`/`/stream` 둘 다 정상
+  응답 확인(카메라+TensorRT 엔진 로드까지 성공, 워밍업에 ~20초 소요).
+
+### 4. MAVLink 시리얼<->UDP 프록시 신설 + 포트 실측 수정 (완료)
+GCS(`scripts/gcs.sh`) 단독 테스트 중 실제로 발견한 두 가지 실제 버그:
+
+**4-1. 픽스호크 시리얼 주소 불일치.** `setting/MAVLink.yaml`
+`real.serial.address`가 `/dev/ttyACM0`으로 고정돼 있었는데, 지금 연결된
+4mini는 `/dev/ttyACM1`로 잡혀 있었음(USB enumeration 순서가 어떤 보드를
+꽂았느냐에 따라 매번 바뀜 - `dmesg`/`udevadm`으로 확인). `/dev/ttyACM1`
+로 수정, `check_link`로 heartbeat 수신 확인. **6cmini로 다시 바꾸면 포트
+번호가 또 바뀔 수 있음 - 그때 다시 확인 필요.**
+
+**4-2. MAVLink UDP 프록시가 실제로는 없었음.** `setting/port.yaml`이
+예전부터 "mavproxy/mavlink-router가 외부에서 떠서 시리얼을 UDP
+14550/14551로 fan-out 해준다"는 전제였는데, 이 저장소/환경엔 그게 실제로
+없었음 - `target_distance.cpp`가 계속 heartbeat 타임아웃으로 죽던 근본
+원인. 이 환경의 `mavproxy.py`는 실행하자마자 core dump(깨진 설치),
+`mavlink-routerd`는 미설치, sudo 불가로 apt 설치도 불가능해서 직접
+구현:
+- **`control/mavlink_proxy.cpp`** (신규): 시리얼을 혼자 열고 UDP
+  14550/14551/14552(`mavlink_control`/`mavlink_sensor`/`mavlink_gcs`,
+  마지막은 이번에 `setting/port.yaml`에 새로 추가)로 양방향 릴레이.
+  MAVLink를 파싱하지 않고 바이트만 그대로 중계(수신 측이 어차피
+  프레이밍을 다시 맞춤). **1차 구현에 버그 있었음**: fan-out 포트를
+  `mav_transport.cpp`의 `UdpTransport`(bind)로 열어서, 다운스트림
+  프로그램들도 같은 포트를 bind하려다 충돌 - 아무도 못 붙는 상태였음.
+  `connect()` 기반 UDP 클라이언트 소켓(`UdpClientPort`, 이 파일 안에
+  직접 구현)으로 교체해서 해결 - `target_link.hpp`의
+  `TargetRangeSender`와 같은 패턴.
+- **`gcs/sender/telem_sender_main.cpp`**: 시리얼(`real.serial`) 직접
+  열던 걸 이 프록시의 `mavlink_gcs`(14552) 포트로 변경 -
+  `control.cpp`/`target_distance.cpp`와 시리얼 포트 경합하던 문제
+  (파일 상단 KNOWN LIMITATION으로 이미 적혀 있던 것) 해소.
+- **`scripts/gcs.sh`**: 원래 `telem_sender`만 띄웠는데, target 필드가
+  항상 null이라는 지적을 받고 확인해보니 `target_distance`(+그게
+  필요로 하는 yolo)가 같이 안 떠서였음 - mavlink_proxy+yolo_headless+
+  target_distance+telem_sender 4개를 한 번에 띄우는 "GCS 단독 테스트"
+  스크립트로 확장.
+- **`scripts/full_mission.sh`**: mavlink_proxy/telem_sender를 앞단에
+  추가(health_check 다음, yolo/게이트 이전). `gcs.sh`를 통째로 불러
+  쓰면 yolo_headless/target_distance가 이 스크립트 몫과 중복 실행되므로,
+  `gcs.sh`를 부르지 않고 mavlink_proxy/telem_sender만 직접 띄우는
+  구조로 분리.
+- **실측 테스트(45초)**: mavlink_proxy 정상 fan-out, telem_sender
+  프록시로 정상 연결, **target_distance가 더 이상 죽지 않고 계속
+  살아서 도는 것 확인**(이게 원래 막혀 있던 문제).
+
+### ⚠️ 실비행 전 확인할 것 (추가분, 2026-08-11)
+- `control --auto-intercept`는 아직 실제 AUTO 미션으로 테스트 못함 -
+  SITL이든 실기든 AUTO 모드로 날리면서 GUIDED 요격/AUTO 복귀가 실제로
+  되는지 검증 필요.
+- `mavlink_proxy.cpp`는 직접 만든 대체품(원래 기대하던 외부
+  mavlink-router가 없어서) - 45초 테스트에서 heartbeat/명령 왕복은
+  확인했지만, `target_distance`가 요청한 ALTITUDE 스트림은 그 시간 안에
+  안 들어왔음(원인 미확인 - 픽스호크 파라미터 문제일 수도 있음, 프록시
+  버그인지 재확인 필요). 장시간 운용 시 안정성도 미검증(바이트 단위
+  라운드로빈 릴레이라 진짜 mavlink-router보다 지연/처리량이 불리할 수
+  있음).
+- `yolo_headless`의 카메라+모델 워밍업이 ~20초 걸림 - `full_mission.sh`
+  의 confirmed 폴링 게이트가 이 시간을 기다려주는지는 확인했지만, 실제
+  비행 시나리오에서 이 지연이 문제 안 되는지 재확인.
+- 4mini `/dev/ttyACM1` 고정은 지금 연결 기준 - 6cmini나 다른 보드로
+  바꾸면 포트 번호가 다시 바뀔 수 있음(`/dev/serial/by-id/`의 보드별
+  고유 심볼릭 링크를 쓰는 게 더 안정적 - 아직 안 바꿈).
+- git: `control_program_test1` 브랜치에 1번 항목(auto-intercept)까지만
+  커밋/푸시됨. 2~4번 항목(yolo_headless, mavlink_proxy, telem_sender
+  수정, 포트/설정 변경)은 아직 로컬에만 있고 커밋 안 됨.
+
 ## 2026-08-08
 
 ### 1. control_sim.cpp - CMakeLists 등록 해지
