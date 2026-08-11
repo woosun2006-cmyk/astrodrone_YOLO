@@ -54,6 +54,10 @@
   <div class="panel video-panel">
     <h2>영상 (YOLO live)</h2>
     <img id="videoStream" alt="video stream">
+    <div id="videoUnavailable" style="display:none; padding:24px; text-align:center; color:var(--dim);">
+      영상 없음 (헤드리스 모드로 실행 중 — run_yolo_headless.sh는 /stream을 만들지 않습니다.<br>
+      영상을 보려면 젯슨에서 run_yolo_live.sh로 실행해야 합니다)
+    </div>
   </div>
   <div class="panel">
     <h2>상태</h2>
@@ -76,7 +80,20 @@
 async function loadConfig() {
   const r = await fetch('/config');
   const cfg = await r.json();
-  document.getElementById('videoStream').src = `http://${cfg.jetson_host}:${cfg.yolo_port}/stream`;
+  const img = document.getElementById('videoStream');
+  const unavailable = document.getElementById('videoUnavailable');
+  // yolo_headless.sh serves /target but deliberately no /stream (saves
+  // CPU/GPU during real flights) -- show a message instead of a broken
+  // image icon when that's what's running.
+  img.onerror = () => {
+    img.style.display = 'none';
+    unavailable.style.display = 'block';
+  };
+  img.onload = () => {
+    img.style.display = 'block';
+    unavailable.style.display = 'none';
+  };
+  img.src = `http://${cfg.jetson_host}:${cfg.yolo_port}/stream`;
 }
 
 function fmt(v, digits) {
