@@ -48,6 +48,13 @@ target_track:
   stop_distance: 2.0       # m; forward speed -> 0 once inside this range
   target_lost_land_sec: 10.0  # control.cpp lands if the target stays lost this long
   approach_duration_sec: 60  # control.cpp lands automatically after this long
+  # control --auto-intercept only (run_auto_intercept() in control.cpp): the
+  # vehicle is expected to already be flying its own AUTO mission, and this
+  # only takes over into GUIDED once a target locks on - see control.cpp's
+  # top-of-function comment on run_auto_intercept() for the full flow.
+  lock_confirm_sec: 1.0             # target must track continuously this long before taking over from AUTO
+  intercept_approach_duration_sec: 30  # cap on one GUIDED approach attempt before handing back to AUTO
+  reacquire_cooldown_sec: 3.0       # pause after handing back to AUTO before watching for the next lock
   # control.cpp's 1.range calc -> 2.velocity calc -> 3.send-to-Pixhawk cycle
   # period. Deliberately kept faster than target_distance.cpp's own sensing
   # rate (setting/rate.yaml's sense_cycle_ms): ArduPilot's GUIDED mode wants

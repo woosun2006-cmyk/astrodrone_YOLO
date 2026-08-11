@@ -286,6 +286,76 @@ std::vector<std::string> evaluate_health_breach(const HealthState& h, const Heal
     return reasons;
 }
 
+// Decodes one vehicle-health MAVLink message (SYS_STATUS/GPS_RAW_INT/
+// EKF_STATUS_REPORT/HEARTBEAT) into `health`. Shared between
+// approach_target()'s active-control loop and wait_for_lock()'s passive
+// AUTO-mode watch further down - both need the same battery/gps/heartbeat/
+// ekf picture, they just react to it differently (approach_target()
+// commands LOITER/LAND on a breach; wait_for_lock() just refuses to grab
+// control from AUTO while one is active).
+void apply_health_message(const mavlink_message_t& msg, HealthState& health,
+                           std::chrono::steady_clock::time_point now) {
+    switch (msg.msgid) {
+        case MAVLINK_MSG_ID_SYS_STATUS: {
+            mavlink_sys_status_t s;
+            mavlink_msg_sys_status_decode(&msg, &s);
+            health.battery_percent = s.battery_remaining;
+            health.battery_voltage_v = s.voltage_battery == 65535 ? -1 : s.voltage_battery / 1000.0;
+            health.prearm_healthy = (s.onboard_control_sensors_health & MAV_SYS_STATUS_PREARM_CHECK) != 0;
+            health.have_battery = true;
+            health.have_sys_status = true;
+            break;
+        }
+        case MAVLINK_MSG_ID_GPS_RAW_INT: {
+            mavlink_gps_raw_int_t g;
+            mavlink_msg_gps_raw_int_decode(&msg, &g);
+            health.fix_type = g.fix_type;
+            health.satellites = g.satellites_visible;
+            health.have_gps = true;
+            // Same get_gps_location.cpp reading, kept here purely for the
+            // gps_moved_m verification/logging in approach_target() - it
+            // never feeds a velocity command.
+            if (g.fix_type >= 2) {
+                health.lat = g.lat / 1e7;
+                health.lon = g.lon / 1e7;
+                health.have_position = true;
+            }
+            break;
+        }
+        case MAVLINK_MSG_ID_EKF_STATUS_REPORT: {
+            mavlink_ekf_status_report_t e;
+            mavlink_msg_ekf_status_report_decode(&msg, &e);
+            health.ekf_pos_horiz_variance = e.pos_horiz_variance;
+            health.ekf_velocity_variance = e.velocity_variance;
+            health.have_ekf = true;
+            break;
+        }
+        case MAVLINK_MSG_ID_HEARTBEAT: {
+            mavlink_heartbeat_t hb;
+            mavlink_msg_heartbeat_decode(&msg, &hb);
+            health.system_status = hb.system_status;
+            health.custom_mode = hb.custom_mode;
+            health.armed = is_armed_from_heartbeat(hb);
+            health.have_armed = true;
+            health.last_heartbeat = now;
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+// What approach_target() did when it returned, so a caller that might run
+// it more than once (run_auto_intercept() further down) knows whether to
+// keep going or stop:
+//   - kLanded: a LAND command was sent from inside this call (heartbeat
+//     lost, unexpected disarm, or - when resume_mode is empty - the target
+//     stayed lost past target_lost_land_sec). The flight is over.
+//   - kHandedBack: duration_sec elapsed, or the target stayed lost past
+//     target_lost_land_sec while resume_mode was non-empty (mode was
+//     switched back to resume_mode instead of landing). Safe to try again.
+enum class ApproachOutcome { kLanded, kHandedBack };
+
 // Stage 2+3 of the target-approach pipeline, plus this program's safety
 // layers: an altitude ceiling (setting/safety.yaml's altitude_limit), a
 // vehicle-health watch (battery/heartbeat/gps/prearm) that hands off to
@@ -294,8 +364,19 @@ std::vector<std::string> evaluate_health_breach(const HealthState& h, const Heal
 // process that ever sends MAVLink commands to the vehicle, so all of this
 // lives here instead of in a separate emergency process - see
 // setting/safety.yaml's top comment.
-void approach_target(const YamlValue& track, const AltitudeLimit& alt_limit, const HealthLimit& health_limit,
-                      double duration_sec) {
+//
+// resume_mode: what to switch back to instead of landing when the target
+// stays lost past target_lost_land_sec, or once duration_sec elapses.
+// Empty (the default - the self-launched flow in main() uses this) keeps
+// the original always-land-eventually contract. Non-empty is
+// run_auto_intercept()'s case: the vehicle was already flying resume_mode
+// (its own AUTO mission) before this call took over, so losing the target
+// or running out of intercept time isn't a reason to end the flight - it's
+// a reason to give the mission back control so it can keep going (and
+// maybe present another target later).
+ApproachOutcome approach_target(const YamlValue& track, const AltitudeLimit& alt_limit,
+                                 const HealthLimit& health_limit, double duration_sec,
+                                 const std::string& resume_mode = "") {
     int udp_port = static_cast<int>(track.get_long_or("udp_port", 15020));
     double cycle_ms = track.get_double_or("control_cycle_ms", 50);
     double max_forward = track.get_double_or("max_forward_speed", 1.5);
@@ -418,83 +499,38 @@ void approach_target(const YamlValue& track, const AltitudeLimit& alt_limit, con
         if (vehicle.recv_match({MAVLINK_MSG_ID_SYS_STATUS, MAVLINK_MSG_ID_GPS_RAW_INT,
                                  MAVLINK_MSG_ID_HEARTBEAT, MAVLINK_MSG_ID_EKF_STATUS_REPORT},
                                 hmsg, kHealthPollTimeoutSec)) {
-            switch (hmsg.msgid) {
-                case MAVLINK_MSG_ID_SYS_STATUS: {
-                    mavlink_sys_status_t s;
-                    mavlink_msg_sys_status_decode(&hmsg, &s);
-                    health.battery_percent = s.battery_remaining;
-                    health.battery_voltage_v = s.voltage_battery == 65535 ? -1 : s.voltage_battery / 1000.0;
-                    health.prearm_healthy =
-                        (s.onboard_control_sensors_health & MAV_SYS_STATUS_PREARM_CHECK) != 0;
-                    health.have_battery = true;
-                    health.have_sys_status = true;
-                    break;
-                }
-                case MAVLINK_MSG_ID_GPS_RAW_INT: {
-                    mavlink_gps_raw_int_t g;
-                    mavlink_msg_gps_raw_int_decode(&hmsg, &g);
-                    health.fix_type = g.fix_type;
-                    health.satellites = g.satellites_visible;
-                    health.have_gps = true;
-                    // Same get_gps_location.cpp reading, kept here purely
-                    // for the gps_moved_m verification/logging below - it
-                    // never feeds a velocity command.
-                    if (g.fix_type >= 2) {
-                        health.lat = g.lat / 1e7;
-                        health.lon = g.lon / 1e7;
-                        health.have_position = true;
-                    }
-                    break;
-                }
-                case MAVLINK_MSG_ID_EKF_STATUS_REPORT: {
-                    mavlink_ekf_status_report_t e;
-                    mavlink_msg_ekf_status_report_decode(&hmsg, &e);
-                    health.ekf_pos_horiz_variance = e.pos_horiz_variance;
-                    health.ekf_velocity_variance = e.velocity_variance;
-                    health.have_ekf = true;
-                    break;
-                }
-                case MAVLINK_MSG_ID_HEARTBEAT: {
-                    mavlink_heartbeat_t hb;
-                    mavlink_msg_heartbeat_decode(&hmsg, &hb);
-                    health.system_status = hb.system_status;
-                    health.custom_mode = hb.custom_mode;
-                    bool now_armed = is_armed_from_heartbeat(hb);
+            // Captured before apply_health_message() below overwrites it -
+            // that function only touches health.armed on a HEARTBEAT
+            // message, so for any other msgid this stays equal to
+            // health.armed and the comparison after is a no-op.
+            bool was_armed = health.have_armed && health.armed;
+            apply_health_message(hmsg, health, cycle_start);
 
-                    // Unexpected disarm: this loop never disarms on its own
-                    // (arm_disarm(false) only ever happens outside
-                    // approach_target(), after it returns), so any
-                    // true -> false transition observed here is external -
-                    // a crash, a firmware failsafe cutting motors, physical
-                    // damage, etc. Request LAND immediately (best-effort;
-                    // if it's truly unresponsive this does nothing, but if
-                    // it's still listening it can only help) and stop -
-                    // there is nothing else this loop can usefully command
-                    // with the motors off.
-                    if (health.have_armed && health.armed && !now_armed) {
-                        std::cout << "[EMERGENCY] 예상치 못한 disarm 감지 (armed: true -> false) - "
-                                     "긴급 LAND 명령 전송 후 종료"
-                                  << std::endl;
-                        logger.log(elapsed_sec, mode_string(health.custom_mode), false, false, last.distance_m,
-                                   0, 0, 0, last.altitude_m, "", health.battery_percent,
-                                   health.battery_voltage_v, health.fix_type, health.satellites,
-                                   health.prearm_healthy, health.system_status, true,
-                                   "unexpected disarm mid-flight", "UNEXPECTED_DISARM", health.lat,
-                                   health.lon, gps_moved_m);
-                        try {
-                            drone::land();
-                        } catch (const std::exception& e) {
-                            std::cerr << "LAND 명령 전송 실패: " << e.what() << std::endl;
-                        }
-                        return;
-                    }
-                    health.armed = now_armed;
-                    health.have_armed = true;
-                    health.last_heartbeat = cycle_start;
-                    break;
+            // Unexpected disarm: this loop never disarms on its own
+            // (arm_disarm(false) only ever happens outside
+            // approach_target(), after it returns), so any true -> false
+            // transition observed here is external - a crash, a firmware
+            // failsafe cutting motors, physical damage, etc. Request LAND
+            // immediately (best-effort; if it's truly unresponsive this
+            // does nothing, but if it's still listening it can only help)
+            // and stop - there is nothing else this loop can usefully
+            // command with the motors off.
+            if (was_armed && health.have_armed && !health.armed) {
+                std::cout << "[EMERGENCY] 예상치 못한 disarm 감지 (armed: true -> false) - "
+                             "긴급 LAND 명령 전송 후 종료"
+                          << std::endl;
+                logger.log(elapsed_sec, mode_string(health.custom_mode), false, false, last.distance_m,
+                           0, 0, 0, last.altitude_m, "", health.battery_percent,
+                           health.battery_voltage_v, health.fix_type, health.satellites,
+                           health.prearm_healthy, health.system_status, true,
+                           "unexpected disarm mid-flight", "UNEXPECTED_DISARM", health.lat,
+                           health.lon, gps_moved_m);
+                try {
+                    drone::land();
+                } catch (const std::exception& e) {
+                    std::cerr << "LAND 명령 전송 실패: " << e.what() << std::endl;
                 }
-                default:
-                    break;
+                return ApproachOutcome::kLanded;
             }
         }
 
@@ -529,7 +565,7 @@ void approach_target(const YamlValue& track, const AltitudeLimit& alt_limit, con
             } catch (const std::exception& e) {
                 std::cerr << "LAND 명령 전송 실패: " << e.what() << std::endl;
             }
-            return;
+            return ApproachOutcome::kLanded;
         }
 
         // Same escalation as heartbeat loss above, for the same reason:
@@ -537,6 +573,22 @@ void approach_target(const YamlValue& track, const AltitudeLimit& alt_limit, con
         // at 0 forever (see the tracking block below) - the vehicle sits
         // hovering in GUIDED indefinitely instead of ever coming down.
         if (target_lost_sec > target_lost_land_sec) {
+            if (!resume_mode.empty()) {
+                std::cout << "[AUTO_INTERCEPT] 타겟 로스트 " << std::fixed << std::setprecision(1)
+                          << target_lost_sec << "s > target_lost_land_sec " << target_lost_land_sec
+                          << "s - " << resume_mode << " 로 복귀" << std::endl;
+                logger.log(elapsed_sec, mode_string(health.custom_mode), health.armed, false,
+                           last.distance_m, 0, 0, 0, last.altitude_m, "", health.battery_percent,
+                           health.battery_voltage_v, health.fix_type, health.satellites,
+                           health.prearm_healthy, health.system_status, false, "",
+                           "TARGET_LOST_RESUME_" + resume_mode, health.lat, health.lon, gps_moved_m);
+                try {
+                    drone::set_mode(resume_mode);
+                } catch (const std::exception& e) {
+                    std::cerr << resume_mode << " 전환 명령 전송 실패: " << e.what() << std::endl;
+                }
+                return ApproachOutcome::kHandedBack;
+            }
             std::cout << "[EMERGENCY] 타겟 로스트 " << std::fixed << std::setprecision(1)
                       << target_lost_sec << "s > target_lost_land_sec " << target_lost_land_sec
                       << "s - 긴급 LAND 명령 전송 후 종료" << std::endl;
@@ -550,7 +602,7 @@ void approach_target(const YamlValue& track, const AltitudeLimit& alt_limit, con
             } catch (const std::exception& e) {
                 std::cerr << "LAND 명령 전송 실패: " << e.what() << std::endl;
             }
-            return;
+            return ApproachOutcome::kLanded;
         }
 
         std::vector<std::string> reasons = evaluate_health_breach(health, health_limit, cycle_start);
@@ -672,11 +724,223 @@ void approach_target(const YamlValue& track, const AltitudeLimit& alt_limit, con
 
         std::this_thread::sleep_until(next_tick);
     }
+
+    // Reached only via the duration_sec break at the top of the loop -
+    // every early exit above already returned directly.
+    if (!resume_mode.empty()) {
+        std::cout << "[AUTO_INTERCEPT] 접근 제한 시간(" << duration_sec << "초) 도달 - " << resume_mode
+                  << " 로 복귀" << std::endl;
+        try {
+            drone::set_mode(resume_mode);
+        } catch (const std::exception& e) {
+            std::cerr << resume_mode << " 전환 명령 전송 실패: " << e.what() << std::endl;
+        }
+    }
+    return ApproachOutcome::kHandedBack;
+}
+
+// Blocks until the vehicle is armed and in AUTO mode - flying its own
+// mission, uploaded separately (e.g. from a GCS), never something this
+// program commands. Unlike wait_for_heartbeat() above, this has no overall
+// timeout: run_auto_intercept() is meant to be started once and left
+// running, patiently waiting for the operator to switch into AUTO whenever
+// they're ready to begin the mission, not to give up after a fixed window.
+// A heartbeat gap past max_heartbeat_gap_sec still throws - if the link
+// itself is gone, waiting silently forever would just hide that instead of
+// surfacing it.
+void wait_for_auto_armed(MavConnection& vehicle, double max_heartbeat_gap_sec) {
+    auto last_heartbeat = std::chrono::steady_clock::now();
+    auto last_status_print = last_heartbeat - std::chrono::seconds(10);
+    while (true) {
+        auto now = std::chrono::steady_clock::now();
+        double gap = std::chrono::duration<double>(now - last_heartbeat).count();
+        if (gap > max_heartbeat_gap_sec) {
+            throw std::runtime_error("AUTO 대기 중: heartbeat " + std::to_string(max_heartbeat_gap_sec) +
+                                      "초 이상 끊김 - 픽스호크 응답 없음");
+        }
+        mavlink_message_t msg;
+        if (vehicle.recv_match({MAVLINK_MSG_ID_HEARTBEAT}, msg, 0.5)) {
+            mavlink_heartbeat_t hb;
+            mavlink_msg_heartbeat_decode(&msg, &hb);
+            last_heartbeat = now;
+            if (is_armed_from_heartbeat(hb) && hb.custom_mode == copter_mode_mapping().at("AUTO")) {
+                return;
+            }
+        }
+        if (std::chrono::duration<double>(now - last_status_print).count() >= 5.0) {
+            std::cout << "[AUTO_INTERCEPT] AUTO 전환/arm 대기 중..." << std::endl;
+            last_status_print = now;
+        }
+    }
+}
+
+// Polls target_distance.cpp's UDP link and the vehicle's own telemetry
+// while AUTO still has control, waiting for a target lock solid enough to
+// justify taking over: lock_confirm_sec of continuous tracking (same
+// `tracking` definition approach_target() uses - fresh link, valid, found)
+// while current health is clean (evaluate_health_breach() empty) and the
+// vehicle is still armed and in AUTO. A stray single-frame detection, or a
+// lock that shows up mid health-breach, won't trigger a takeover.
+//
+// Returns false - without ever touching mode or sending a velocity command
+// - if AUTO/armed drops out from under us first (operator switched modes,
+// disarmed, landed, RTL'd, ...) or the heartbeat itself goes stale; the
+// caller goes back to wait_for_auto_armed() either way rather than treating
+// it as a fatal error - the operator is still flying, just not ready for a
+// handoff yet.
+bool wait_for_lock(MavConnection& vehicle, TargetRangeReceiver& receiver, const HealthLimit& health_limit,
+                    double link_stale_ms, double lock_confirm_sec, HealthState& health) {
+    constexpr double kPollTimeoutSec = 0.1;
+    auto last_valid = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+    TargetRangeMsg last{};
+    bool locking = false;
+    auto lock_since = std::chrono::steady_clock::now();
+    auto last_status_print = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+
+    while (true) {
+        auto now = std::chrono::steady_clock::now();
+
+        TargetRangeMsg msg;
+        if (receiver.poll(msg)) {
+            last = msg;
+            last_valid = now;
+        }
+        double link_age_ms = std::chrono::duration<double, std::milli>(now - last_valid).count();
+        bool tracking = link_age_ms <= link_stale_ms && last.valid && last.found;
+
+        mavlink_message_t hmsg;
+        if (vehicle.recv_match({MAVLINK_MSG_ID_SYS_STATUS, MAVLINK_MSG_ID_GPS_RAW_INT,
+                                 MAVLINK_MSG_ID_HEARTBEAT, MAVLINK_MSG_ID_EKF_STATUS_REPORT},
+                                hmsg, kPollTimeoutSec)) {
+            apply_health_message(hmsg, health, now);
+        }
+
+        double heartbeat_gap = std::chrono::duration<double>(now - health.last_heartbeat).count();
+        if (heartbeat_gap > health_limit.max_heartbeat_gap_sec) {
+            std::cerr << "[AUTO_INTERCEPT] heartbeat gap " << std::fixed << std::setprecision(1)
+                      << heartbeat_gap << "s > " << health_limit.max_heartbeat_gap_sec
+                      << "s - 대기 중단, 연결 회복 대기." << std::endl;
+            return false;
+        }
+        if (!health.have_armed || !health.armed ||
+            health.custom_mode != copter_mode_mapping().at("AUTO")) {
+            return false;
+        }
+
+        bool healthy = evaluate_health_breach(health, health_limit, now).empty();
+        if (tracking && healthy) {
+            if (!locking) {
+                locking = true;
+                lock_since = now;
+            }
+            double held = std::chrono::duration<double>(now - lock_since).count();
+            if (held >= lock_confirm_sec) return true;
+        } else {
+            locking = false;
+        }
+
+        if (std::chrono::duration<double>(now - last_status_print).count() >= 5.0) {
+            std::cout << "[AUTO_INTERCEPT] AUTO 비행 중 - 타겟 대기 (tracking="
+                      << (tracking ? "Y" : "N") << " healthy=" << (healthy ? "Y" : "N") << ")"
+                      << std::endl;
+            last_status_print = now;
+        }
+    }
+}
+
+// Entry point for "픽스호크가 AUTO 모드로 미션을 날고 있다가, YOLO가 타겟을
+// 확정 인식하면 그쪽으로 접근한다" (scripts/full_mission.sh, control
+// --auto-intercept). Unlike the self-launched flow in main() below, this
+// never arms or takes off itself - the vehicle is expected to already be
+// flying an externally-uploaded AUTO mission by the time a target locks on.
+//
+// Loop:
+//   1. wait_for_auto_armed() - sit and watch until AUTO + armed
+//   2. wait_for_lock()       - keep watching AUTO's flight, now also
+//                               polling target_distance.cpp, until a target
+//                               lock is confirmed
+//   3. switch to GUIDED, run approach_target() with resume_mode="AUTO" so
+//      losing the target or running out of intercept time hands control
+//      back to the mission instead of landing
+//   4. on kHandedBack, cool down briefly then go back to step 1 (mode is
+//      already AUTO again by then, so this re-enters immediately); on
+//      kLanded (heartbeat lost / unexpected disarm), stop - the flight is
+//      over.
+void run_auto_intercept(const YamlValue& track, const AltitudeLimit& alt_limit,
+                         const HealthLimit& health_limit) {
+    double link_stale_ms = track.get_double_or("link_stale_ms", 500);
+    double lock_confirm_sec = track.get_double_or("lock_confirm_sec", 1.0);
+    double intercept_duration_sec = track.get_double_or("intercept_approach_duration_sec", 30.0);
+    double reacquire_cooldown_sec = track.get_double_or("reacquire_cooldown_sec", 3.0);
+    int udp_port = static_cast<int>(track.get_long_or("udp_port", 15020));
+    const std::string kResumeMode = "AUTO";
+
+    MavConnection& vehicle = drone::require_connection();
+    request_message_interval(vehicle, MAVLINK_MSG_ID_SYS_STATUS, health_limit.poll_rate_hz);
+    request_message_interval(vehicle, MAVLINK_MSG_ID_GPS_RAW_INT, health_limit.poll_rate_hz);
+    request_message_interval(vehicle, MAVLINK_MSG_ID_EKF_STATUS_REPORT, health_limit.poll_rate_hz);
+
+    TargetRangeReceiver receiver(udp_port);
+
+    std::cout << "AUTO 요격 모드 시작 (UDP " << udp_port << ", 잠금 확인 " << lock_confirm_sec
+              << "s, 접근 제한 " << intercept_duration_sec << "s, 재탐지 대기 " << reacquire_cooldown_sec
+              << "s)" << std::endl;
+
+    while (true) {
+        wait_for_auto_armed(vehicle, health_limit.max_heartbeat_gap_sec);
+        std::cout << "[AUTO_INTERCEPT] AUTO + armed 확인됨 - 타겟 확정 대기." << std::endl;
+
+        HealthState health;
+        health.last_heartbeat = std::chrono::steady_clock::now();
+        if (!wait_for_lock(vehicle, receiver, health_limit, link_stale_ms, lock_confirm_sec, health)) {
+            std::cout << "[AUTO_INTERCEPT] AUTO/armed 상태 이탈 - 대기 상태로 복귀." << std::endl;
+            continue;
+        }
+
+        std::cout << "[AUTO_INTERCEPT] 타겟 확정 (" << lock_confirm_sec << "s 유지) - GUIDED로 전환합니다."
+                  << std::endl;
+        if (!drone::set_mode("GUIDED")) {
+            std::cerr << "[AUTO_INTERCEPT] GUIDED 전환 명령 전송 실패 - 대기 상태로 복귀." << std::endl;
+            continue;
+        }
+        try {
+            wait_for_heartbeat(vehicle, 5.0, health_limit.max_heartbeat_gap_sec, "GUIDED 전환 (요격)",
+                                [](const mavlink_heartbeat_t& hb) {
+                                    return hb.custom_mode == copter_mode_mapping().at("GUIDED");
+                                });
+        } catch (const std::exception& e) {
+            std::cerr << "[AUTO_INTERCEPT] " << e.what() << " - " << kResumeMode << " 복귀 시도."
+                      << std::endl;
+            try {
+                drone::set_mode(kResumeMode);
+            } catch (const std::exception& e2) {
+                std::cerr << "[AUTO_INTERCEPT] " << kResumeMode << " 전환 명령 전송 실패: " << e2.what()
+                          << std::endl;
+            }
+            continue;
+        }
+
+        ApproachOutcome outcome =
+            approach_target(track, alt_limit, health_limit, intercept_duration_sec, kResumeMode);
+        if (outcome == ApproachOutcome::kLanded) {
+            std::cout << "[AUTO_INTERCEPT] 비상 착륙으로 종료 - 프로그램을 마칩니다." << std::endl;
+            return;
+        }
+
+        std::cout << "[AUTO_INTERCEPT] " << kResumeMode << " 로 복귀함 - " << reacquire_cooldown_sec
+                  << "s 후 재탐지 대기." << std::endl;
+        std::this_thread::sleep_for(std::chrono::duration<double>(reacquire_cooldown_sec));
+    }
 }
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    bool auto_intercept = false;
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--auto-intercept") auto_intercept = true;
+    }
+
     try {
         YamlValue settings = drone::load_mavlink_settings();
         YamlValue track = settings["target_track"];
@@ -733,6 +997,14 @@ int main() {
                                              ports.get_long_or("mavlink_control", 14550));
         drone::connect(mav_address);
         MavConnection& vehicle = drone::require_connection();
+
+        if (auto_intercept) {
+            // AUTO 모드로 이미 날고 있는 미션에 끼어드는 흐름 - 이 프로그램은
+            // 여기서 arm/이륙을 직접 하지 않는다 (미션이 이미 하고 있음).
+            run_auto_intercept(track, alt_limit, health_limit);
+            return 0;
+        }
+
         const double target_alt = 4.5;
 
         if (!drone::set_mode("GUIDED")) {
@@ -752,11 +1024,17 @@ int main() {
         drone::takeoff(target_alt);
         wait_for_heartbeat(vehicle, 10.0, health_limit.max_heartbeat_gap_sec, "이륙 대기");
 
-        approach_target(track, alt_limit, health_limit,
-                         track.get_double_or("approach_duration_sec", 60));
-
-        drone::land();
-        std::cout << "착륙 중..." << std::endl;
+        ApproachOutcome outcome = approach_target(track, alt_limit, health_limit,
+                                                   track.get_double_or("approach_duration_sec", 60));
+        // kLanded means approach_target() already sent LAND itself
+        // (heartbeat lost / unexpected disarm) - sending it again here
+        // would just be a redundant no-op, but skipping it makes the one
+        // remaining call site (the normal duration_sec-elapsed path)
+        // unambiguous about who's responsible for landing.
+        if (outcome != ApproachOutcome::kLanded) {
+            drone::land();
+            std::cout << "착륙 중..." << std::endl;
+        }
         return 0;
     } catch (const std::exception& e) {
         std::cerr << e.what() << std::endl;
