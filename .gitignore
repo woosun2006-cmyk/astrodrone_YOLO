@@ -2,3 +2,9 @@ __pycache__/
 *.pyc
 *.tlog
 *.tlog.raw
+
+# Local-only ArduPilot SITL / Gazebo state and large outputs.
+simulation/env/simulation.env
+simulation/logs/
+simulation/videos/
+simulation/runtime/
