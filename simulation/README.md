@@ -17,11 +17,17 @@ Linux build 결과를 이 저장소로 복사하지 않는다. 실제 Pixhawk, s
 - Gazebo: `gz sim` 10.4.0, Gazebo Jetty packages
 - plugin: `/home/hyojin/ardupilot_gazebo/build/libArduPilotPlugin.so`,
   `libgz-sim.so.10` 사용
-- world/model: 제공 예제 `iris_runway.sdf` / `iris_with_gimbal`
+- upstream 연결 smoke world/model: 제공 예제 `iris_runway.sdf` /
+  `iris_with_gimbal`
+- project camera smoke world/model: 저장소 소유 custom
+  `simulation/worlds/ensamb_iris_runway.sdf` / `ensamb_with_gimbal` /
+  `ensamb_with_standoffs::down_camera`
 - SITL: ArduCopter frame `gazebo-iris`, model `JSON`
 
 외부 checkout에는 조사 당시 사용자 변경과 미추적 파일이 있다. 이 환경은
-그 파일을 수정하지 않으며, 기본 예제 world/model만 읽는다.
+그 파일을 수정하지 않는다. upstream 연결 smoke는 외부 기본 예제를 읽고,
+project camera smoke는 `simulation/worlds`와 `simulation/models`로 이관한
+저장소 소유 custom 자산을 읽는다.
 
 ## 설정 우선순위
 
@@ -60,6 +66,48 @@ MAVLink audit relay, MAVProxy, 수신 전용 진단을 순서대로 시작하고
 ```bash
 simulation/scripts/smoke_test.sh
 ```
+
+프로젝트의 고정 하향 Gazebo camera transport를 확인할 때는 다음 Gazebo-only
+smoke를 사용한다. 이 script는 일반 smoke의 upstream 기본값을 변경하지 않고
+자체적으로 저장소의 `ensamb_iris_runway.sdf`, `ensamb_with_gimbal`,
+`ensamb_with_standoffs::down_camera_link::down_camera`를 선택한다.
+SITL, MAVProxy, control, YOLO를 시작하거나 MAVLink packet을 송신하지 않는다.
+실행 때마다 모든 topic의 publisher type을 조회하고, SDF include chain에서
+도출한 model/link/sensor 소유권과 유일한 `gz.msgs.Image` publisher가 일치할
+때만 첫 정상 frame을 PPM으로 저장한다. Image publisher가 0개 또는 여러 개면
+임의 선택하지 않고 후보를 기록한 뒤 실패한다. runtime pose로 optical axis가
+body -Z인지도 검증한다. 수신 도구는 설치된 `gz-transport`와 `gz-msgs`를
+사용하며 `/tmp` 아래에만 build된다.
+
+```bash
+simulation/scripts/camera_smoke_test.sh
+```
+
+camera scenario만 다른 외부 구성을 시험하려면 일반 `SIM_WORLD`/`SIM_MODEL`과
+혼동하지 않도록 `CAMERA_SIM_WORLD`, `CAMERA_SIM_MODEL`, `CAMERA_BODY_MODEL`,
+`CAMERA_LINK`, `CAMERA_SENSOR`를 명시한다. 기본 연결 smoke는 계속
+`SIM_WORLD=iris_runway.sdf`, `SIM_MODEL=iris_with_gimbal`을 사용한다.
+
+결과는 Git에서 제외된
+`simulation/logs/camera_smoke_<timestamp>/`에 topic 목록, publisher 정보,
+frame 통계, sample image와 cleanup 요약으로 저장된다.
+
+Gazebo resource lookup은 항상 다음 순서다.
+
+1. `simulation/models`, `simulation/worlds`
+2. `$ARDUPILOT_GAZEBO_DIR/models`, `$ARDUPILOT_GAZEBO_DIR/worlds`
+3. 호출 전에 존재한 추가 `GZ_SIM_RESOURCE_PATH`
+
+따라서 외부 checkout에 같은 이름의 model이 있어도 project custom 자산이 먼저
+선택된다. Camera smoke는 resolved world와 vehicle SDF가 실제 repository 내부
+파일인지 시작 전에 검사하고, summary 첫 부분에 world, vehicle/camera/target SDF
+절대경로를 기록한다.
+
+Custom model은 외부 checkout의 build plugin을 계속 사용한다. 기본 설치 위치는
+`$ARDUPILOT_GAZEBO_DIR/build`이며 `libArduPilotPlugin.so`,
+`libCameraZoomPlugin.so`, `libGstCameraPlugin.so`가 필요하다. Script가 이 경로를
+`GZ_SIM_SYSTEM_PLUGIN_PATH` 앞에 추가한다. Build 결과나 plugin binary는 이
+저장소로 복사하지 않는다.
 
 수동 foreground 실행 순서는 다음과 같다.
 

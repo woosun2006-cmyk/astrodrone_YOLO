@@ -67,7 +67,7 @@ else
 fi
 
 effective_plugin_path="$ARDUPILOT_GAZEBO_DIR/build${GZ_SIM_SYSTEM_PLUGIN_PATH:+:$GZ_SIM_SYSTEM_PLUGIN_PATH}"
-effective_resource_path="$ARDUPILOT_GAZEBO_DIR/models:$ARDUPILOT_GAZEBO_DIR/worlds${GZ_SIM_RESOURCE_PATH:+:$GZ_SIM_RESOURCE_PATH}"
+effective_resource_path="$SIMULATION_DIR/models:$SIMULATION_DIR/worlds:$ARDUPILOT_GAZEBO_DIR/models:$ARDUPILOT_GAZEBO_DIR/worlds${GZ_SIM_RESOURCE_PATH:+:$GZ_SIM_RESOURCE_PATH}"
 pass GZ_SIM_SYSTEM_PLUGIN_PATH "current='${GZ_SIM_SYSTEM_PLUGIN_PATH:-<unset>}' effective='$effective_plugin_path'"
 pass GZ_SIM_RESOURCE_PATH "current='${GZ_SIM_RESOURCE_PATH:-<unset>}' effective='$effective_resource_path'"
 

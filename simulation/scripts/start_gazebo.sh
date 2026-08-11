@@ -22,7 +22,7 @@ grep -q "<fdm_port_in>$GAZEBO_FDM_PORT</fdm_port_in>" "$model_file" ||
 port_in_use "$GAZEBO_FDM_PORT" && sim_die "Gazebo plugin UDP port is already in use: $GAZEBO_FDM_PORT"
 
 export GZ_SIM_SYSTEM_PLUGIN_PATH="$ARDUPILOT_GAZEBO_DIR/build${GZ_SIM_SYSTEM_PLUGIN_PATH:+:$GZ_SIM_SYSTEM_PLUGIN_PATH}"
-export GZ_SIM_RESOURCE_PATH="$ARDUPILOT_GAZEBO_DIR/models:$ARDUPILOT_GAZEBO_DIR/worlds${GZ_SIM_RESOURCE_PATH:+:$GZ_SIM_RESOURCE_PATH}"
+export GZ_SIM_RESOURCE_PATH="$SIMULATION_DIR/models:$SIMULATION_DIR/worlds:$ARDUPILOT_GAZEBO_DIR/models:$ARDUPILOT_GAZEBO_DIR/worlds${GZ_SIM_RESOURCE_PATH:+:$GZ_SIM_RESOURCE_PATH}"
 
 cmd=(gz sim -v "$GZ_VERBOSITY" -r)
 case "$GAZEBO_HEADLESS" in
@@ -33,6 +33,7 @@ esac
 cmd+=("$world_file")
 
 sim_log "world=$world_file model=$SIM_MODEL FDM=udp:127.0.0.1:$GAZEBO_FDM_PORT"
+sim_log "resolved_model=$model_file"
 sim_log "GZ_SIM_SYSTEM_PLUGIN_PATH=$GZ_SIM_SYSTEM_PLUGIN_PATH"
 sim_log "GZ_SIM_RESOURCE_PATH=$GZ_SIM_RESOURCE_PATH"
 printf '[simulation] command:'; printf ' %q' "${cmd[@]}"; printf '\n'

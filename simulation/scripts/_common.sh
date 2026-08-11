@@ -15,6 +15,7 @@ SIM_ENV_KEYS=(
   CONTROL_UDP_PORT TELEMETRY_UDP_PORT GCS_UDP_PORT MAVPROXY_BIN MAVPROXY_STREAMRATE
   SMOKE_TELEMETRY_TIMEOUT TELEMETRY_FRESHNESS_SEC ENABLE_CONTROL_OUTPUT ENABLE_GCS_OUTPUT
   MAVPROXY_MASTER_ENDPOINT MAVLINK_AUDIT_TCP_PORT MAVLINK_AUDIT_REPORT
+  CAMERA_SIM_WORLD CAMERA_SIM_MODEL CAMERA_BODY_MODEL CAMERA_LINK CAMERA_SENSOR
 )
 
 declare -A _SIM_EXPLICIT=()
@@ -145,13 +146,19 @@ verify_mavproxy() {
 resolve_world_file() {
   if [[ "$SIM_WORLD" = /* ]]; then
     printf '%s\n' "$SIM_WORLD"
+  elif [[ -f "$SIMULATION_DIR/worlds/$SIM_WORLD" ]]; then
+    printf '%s/worlds/%s\n' "$SIMULATION_DIR" "$SIM_WORLD"
   else
     printf '%s/worlds/%s\n' "$ARDUPILOT_GAZEBO_DIR" "$SIM_WORLD"
   fi
 }
 
 resolve_model_file() {
-  printf '%s/models/%s/model.sdf\n' "$ARDUPILOT_GAZEBO_DIR" "$SIM_MODEL"
+  if [[ -f "$SIMULATION_DIR/models/$SIM_MODEL/model.sdf" ]]; then
+    printf '%s/models/%s/model.sdf\n' "$SIMULATION_DIR" "$SIM_MODEL"
+  else
+    printf '%s/models/%s/model.sdf\n' "$ARDUPILOT_GAZEBO_DIR" "$SIM_MODEL"
+  fi
 }
 
 port_in_use() {
