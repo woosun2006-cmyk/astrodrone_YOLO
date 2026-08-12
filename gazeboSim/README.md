@@ -354,3 +354,60 @@ gz topic -t /gimbal/cmd_pitch -m gz.msgs.Double -p "data: 1.5708"
 `simulation/` is absent, but the fixed down camera - the configuration that
 actually makes perception viable - only exists on `Document`. Merging the two
 branches would remove the need for that fallback.
+
+### 2026-08-12 (later) - stable target lock achieved
+
+`models/target_basket` is now scaled 8x (mesh scale 0.001 -> 0.008, collision
+box to match, ~1.90 x 1.10 x 0.56 m).
+
+**Why the original size never locked.** `ensamb_with_standoffs`' `down_camera`
+uses `horizontal_fov` 2.7507 rad (~157 deg). At 4 m altitude that covers
+roughly 39 m of ground across 640 px - about 16 px per metre. The stock
+0.238 m basket therefore rendered ~4 px wide, an ~8 px^2 blob: below
+`gazebo_camera_target.py`'s 80 px^2 contour floor, and far too few pixels to
+hold a centroid steady even with the floor lowered. At 8x it subtends ~30 px
+(~450 px^2) and segments cleanly.
+
+Frame analysis confirmed the earlier failure was visibility, not colour: with
+the small target the captured frame contained **zero** red pixels under any
+threshold and 97% of saturated pixels sat at hue 57 (grass).
+
+**Measured result** - vehicle hovering at 4.0 m over the target, 45 s hold:
+
+| metric | value |
+|---|---|
+| `found` | 4196 / 4196 samples (100%) |
+| `confirmed` | 4196 / 4196 samples (100%) |
+| longest continuous `confirmed` streak | 45.0 s |
+| pixel offset | `x_px` ~ -28, `y_px` ~ +-3 (stable) |
+
+`control.cpp` needs `lock_confirm_sec` = 1.0 s of continuous tracking, so this
+clears the requirement by a wide margin.
+
+**Reproducing it**
+
+```bash
+gazeboSim/start_pc_sim.sh                    # spawns the target at 8 m north
+gazeboSim/spawn_target.sh ensamb_iris_runway 0 0   # or put it at the origin
+gz topic -t /world/ensamb_iris_runway/model/ensamb_with_gimbal/model/ensamb_with_standoffs/link/down_camera_link/sensor/down_camera/image/enable_streaming \
+  -m gz.msgs.Boolean -p "data: true"
+/usr/bin/python3 gazeboSim/gazebo_camera_target.py --port 8002
+# then arm, take off to ~4 m over the target
+curl -s http://127.0.0.1:8002/target
+```
+
+**Re-tune if you change anything**
+
+The 8x scale is tied to the camera FOV and the test altitude, not to the real
+basket. Anything that makes the target subtend fewer than ~15 px will stop
+locking reliably - raising the altitude, narrowing the FOV, or restoring the
+original scale all do that. `--hsv-lo` / `--hsv-hi` on the detector adjust the
+colour band if the world lighting changes.
+
+**Still blocked**
+
+`control --auto-intercept` remains unable to use any of this: the
+`wait_for_lock()` / `HealthState` race described above bails before perception
+is ever consulted. Perception is now proven to deliver a stable
+`confirmed: true`, so that defect is the only thing between this harness and a
+full intercept run.

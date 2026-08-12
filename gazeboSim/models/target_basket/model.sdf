@@ -1,18 +1,26 @@
 <?xml version="1.0" ?>
 <!--
-  Copy of simulation/models/target_basket with one deliberate change: the
-  material is red instead of white.
+  Simulation target, derived from simulation/models/target_basket with two
+  deliberate changes. simulation/ itself is never modified.
 
-  gazeboSim/gazebo_camera_target.py finds the target by HSV colour threshold,
-  and the original white basket (ambient/diffuse 1 1 1 1) is indistinguishable
-  from the runway and the sky in the simulated camera feed. Red sits well
-  outside anything else in the iris_runway world, which keeps the harness
-  testing the *pipeline* rather than the detector's ability to segment white
-  on grey.
+  1. Red instead of white. gazebo_camera_target.py segments by HSV, and the
+     original white basket is indistinguishable from the runway and washed-out
+     grass in the rendered feed.
 
-  Geometry, collision box and mesh are unchanged, so the pixel-offset ->
-  ground-offset maths in control/target_distance.cpp sees the same target size
-  as the simulation/ asset it came from. simulation/ itself is not modified.
+  2. Scaled 8x (mesh scale 0.001 -> 0.008, collision box scaled to match), so
+     the real footprint becomes ~1.90 x 1.10 x 0.56 m.
+
+  The scale exists because of the simulated camera's field of view, not
+  because the real basket is that size. ensamb_with_standoffs' down_camera
+  uses horizontal_fov 2.7507 rad (~157 deg): at 4 m altitude that covers
+  roughly 39 m of ground across 640 px, i.e. ~16 px per metre. The original
+  0.238 m basket therefore renders about 4 px wide - an ~8 px^2 blob, below
+  any usable contour threshold and far too noisy to hold a lock. At 8x it is
+  ~30 px wide (~450 px^2), which segments cleanly and holds `confirmed`
+  steady.
+
+  Re-tune this if you change the camera FOV or the test altitude. Anything
+  that makes the target subtend fewer than ~15 px will stop locking reliably.
 -->
 <sdf version="1.9">
   <model name="target_basket">
@@ -21,20 +29,20 @@
       <pose>0 0 0 0 0 0</pose>
 
       <collision name="basket_collision">
-        <pose>0 0 0.035 0 0 0</pose>
+        <pose>0 0 0.28 0 0 0</pose>
         <geometry>
           <box>
-            <size>0.238 0.138 0.070</size>
+            <size>1.904 1.104 0.560</size>
           </box>
         </geometry>
       </collision>
 
       <visual name="basket_visual">
-        <pose>-0.110 -0.060 0 0 0 0</pose>
+        <pose>-0.880 -0.480 0 0 0 0</pose>
         <geometry>
           <mesh>
             <uri>model://target_basket/meshes/basket.stl</uri>
-            <scale>0.001 0.001 0.001</scale>
+            <scale>0.008 0.008 0.008</scale>
           </mesh>
         </geometry>
         <material>
