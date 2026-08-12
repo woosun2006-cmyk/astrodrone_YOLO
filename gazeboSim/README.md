@@ -196,3 +196,161 @@ function exits within milliseconds every time.
 This is in `control/control.cpp` and was left unfixed deliberately (the
 simulation work was scoped to not modify `control/`). It affects real flight
 the same way: nothing about it is simulation-specific.
+
+---
+
+## Changelog
+
+### 2026-08-12
+
+**Added**
+
+- `start_pc_sim.sh` - one-command PC-side bring-up (Gazebo -> SITL -> MAVProxy,
+  in that order, with the port/reset pitfalls handled).
+- `spawn_target.sh` + `models/target_basket/` - spawns a target into the
+  running world so the camera has something to detect. The model is a copy of
+  `simulation/models/target_basket` with the material changed from white to
+  red; geometry and collision box are unchanged. `simulation/` itself is only
+  read, never modified.
+
+**Gazebo configuration: this harness vs `simulation/`**
+
+These differ in one way that decides whether perception works at all, so
+`start_pc_sim.sh` now prefers `simulation/`'s world whenever it is present on
+the checked-out branch and only falls back to the stock one otherwise:
+
+| | `simulation/` (ensamb_iris_runway) | ardupilot_gazebo stock (iris_runway) |
+|---|---|---|
+| camera | `ensamb_with_standoffs::down_camera` | `iris_with_gimbal` gimbal camera |
+| mounting | fixed joint, `<pose>0 0 0 0 1.5708 0</pose>` | 3-axis gimbal, default 0 rad |
+| where it looks | straight down, always | **forward** until commanded |
+| FOV | 2.7507 rad | 2.7507 rad (locally modified) |
+| video out | GstCameraPlugin, udp 5600 | GstCameraPlugin, udp 5600 |
+| ground | `grass_ground` | runway only |
+
+The stock gimbal camera cannot see a target on the ground in a plain SITL run:
+`ArduPilotPlugin` only publishes `/gimbal/cmd_roll|pitch|yaw` once it sees
+non-zero PWM on channels 8/9/10, so with nothing driving those channels the
+topics stay empty and the camera holds its default forward attitude.
+`simulation/reports/2026-08-11-gimbal-direction-investigation.md` measured the
+same thing: optical axis body +X by default, body -Z only after a commanded
++90 deg pitch. Since both cameras carry GstCameraPlugin on the same udp port,
+`gazebo_camera_target.py` works unchanged against either.
+
+To use the stock world anyway, point the gimbal down first:
+
+```bash
+gz topic -t /gimbal/cmd_pitch -m gz.msgs.Double -p "data: 1.5708"
+```
+
+**Verified on 2026-08-12**
+
+- Gazebo Jetty 10.5.0 + ArduCopter SITL bring-up via `start_pc_sim.sh`, with
+  both the stock world and `simulation/`'s ensamb world.
+- `target_basket` spawns into the live world (`gz model --list` shows it).
+- Down-camera RTP stream reaches `gazebo_camera_target.py` at ~8 fps on
+  `.../down_camera_link/sensor/down_camera/image`.
+- Arm, takeoff and GUIDED reposition to 4 m under `safety.yaml`'s 5 m
+  `hard_limit_m`.
+- Earlier the same day: full AUTO waypoint mission + RTL + auto-land + disarm;
+  `scripts/health_check.sh` passing against the bridged SITL (GPS fix_type 6,
+  10 sats); `mavlink_proxy` relaying the SITL over the PTY bridge.
+
+**Not yet working**
+
+- *Stable target lock.* The detector registers the basket transiently
+  (`x_px` ~199, i.e. near the frame edge) but does not hold it while hovering
+  over the spawn point, so `confirmed` never latches. The spawn offset, the
+  camera FOV footprint at 4 m, and the HSV threshold all still need tuning
+  against each other. The transport itself is proven - frames arrive and the
+  detector runs.
+- *`control --auto-intercept`.* Blocked upstream of perception by the
+  `wait_for_lock()` / `HealthState` race described above; it never reaches the
+  lock stage regardless of what `/target` returns.
+
+**Note on branches**
+
+`simulation/` lives on `Document`; `gazeboSim/` and `scripts/` live on
+`control_program_test1`. `start_pc_sim.sh` degrades gracefully when
+`simulation/` is absent, but the fixed down camera - the configuration that
+actually makes perception viable - only exists on `Document`. Merging the two
+branches would remove the need for that fallback.
+
+---
+
+## Changelog
+
+### 2026-08-12
+
+**Added**
+
+- `start_pc_sim.sh` - one-command PC-side bring-up (Gazebo -> SITL -> MAVProxy,
+  in that order, with the port/reset pitfalls handled).
+- `spawn_target.sh` + `models/target_basket/` - spawns a target into the
+  running world so the camera has something to detect. The model is a copy of
+  `simulation/models/target_basket` with the material changed from white to
+  red; geometry and collision box are unchanged. `simulation/` itself is only
+  read, never modified.
+
+**Gazebo configuration: this harness vs `simulation/`**
+
+These differ in one way that decides whether perception works at all, so
+`start_pc_sim.sh` now prefers `simulation/`'s world whenever it is present on
+the checked-out branch and only falls back to the stock one otherwise:
+
+| | `simulation/` (ensamb_iris_runway) | ardupilot_gazebo stock (iris_runway) |
+|---|---|---|
+| camera | `ensamb_with_standoffs::down_camera` | `iris_with_gimbal` gimbal camera |
+| mounting | fixed joint, `<pose>0 0 0 0 1.5708 0</pose>` | 3-axis gimbal, default 0 rad |
+| where it looks | straight down, always | **forward** until commanded |
+| FOV | 2.7507 rad | 2.7507 rad (locally modified) |
+| video out | GstCameraPlugin, udp 5600 | GstCameraPlugin, udp 5600 |
+| ground | `grass_ground` | runway only |
+
+The stock gimbal camera cannot see a target on the ground in a plain SITL run:
+`ArduPilotPlugin` only publishes `/gimbal/cmd_roll|pitch|yaw` once it sees
+non-zero PWM on channels 8/9/10, so with nothing driving those channels the
+topics stay empty and the camera holds its default forward attitude.
+`simulation/reports/2026-08-11-gimbal-direction-investigation.md` measured the
+same thing: optical axis body +X by default, body -Z only after a commanded
++90 deg pitch. Since both cameras carry GstCameraPlugin on the same udp port,
+`gazebo_camera_target.py` works unchanged against either.
+
+To use the stock world anyway, point the gimbal down first:
+
+```bash
+gz topic -t /gimbal/cmd_pitch -m gz.msgs.Double -p "data: 1.5708"
+```
+
+**Verified on 2026-08-12**
+
+- Gazebo Jetty 10.5.0 + ArduCopter SITL bring-up via `start_pc_sim.sh`, with
+  both the stock world and `simulation/`'s ensamb world.
+- `target_basket` spawns into the live world (`gz model --list` shows it).
+- Down-camera RTP stream reaches `gazebo_camera_target.py` at ~8 fps on
+  `.../down_camera_link/sensor/down_camera/image`.
+- Arm, takeoff and GUIDED reposition to 4 m under `safety.yaml`'s 5 m
+  `hard_limit_m`.
+- Earlier the same day: full AUTO waypoint mission + RTL + auto-land + disarm;
+  `scripts/health_check.sh` passing against the bridged SITL (GPS fix_type 6,
+  10 sats); `mavlink_proxy` relaying the SITL over the PTY bridge.
+
+**Not yet working**
+
+- *Stable target lock.* The detector registers the basket transiently
+  (`x_px` ~199, i.e. near the frame edge) but does not hold it while hovering
+  over the spawn point, so `confirmed` never latches. The spawn offset, the
+  camera FOV footprint at 4 m, and the HSV threshold all still need tuning
+  against each other. The transport itself is proven - frames arrive and the
+  detector runs.
+- *`control --auto-intercept`.* Blocked upstream of perception by the
+  `wait_for_lock()` / `HealthState` race described above; it never reaches the
+  lock stage regardless of what `/target` returns.
+
+**Note on branches**
+
+`simulation/` lives on `Document`; `gazeboSim/` and `scripts/` live on
+`control_program_test1`. `start_pc_sim.sh` degrades gracefully when
+`simulation/` is absent, but the fixed down camera - the configuration that
+actually makes perception viable - only exists on `Document`. Merging the two
+branches would remove the need for that fallback.
