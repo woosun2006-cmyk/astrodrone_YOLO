@@ -1,10 +1,23 @@
-// C++/TensorRT port of ../yolo_live.py: same always-on camera + live
-// detection + web dashboard + timed recording report, but running
-// prototype.onnx through a TensorRT engine instead of prototype.pt through
-// torch.hub. The web UI (PAGE below) and every JSON endpoint shape are
-// kept byte-for-byte compatible with the Python version so the existing
-// front-end JS and control/target_distance.cpp's /target poller work
-// against either binary unmodified.
+// Headless twin of yolo_live.cpp for real flights: same camera capture +
+// TensorRT inference + /target JSON endpoint control/target_distance.cpp
+// polls, AND the same /stream MJPEG endpoint yolo_live.cpp has - "headless"
+// here means no dashboard page/recording-slider UI, NOT no video. The
+// laptop-side GCS dashboard (gcs/tools/gcs_bridge.py, dashboard.html) is
+// meant to hit this binary's /stream directly over the LAN (see gcs/PLAN.md:
+// "화면을 그리는 것은 노트북에서 담당하고, jetson은 json형태의 파일로만 줌" -
+// the Jetson doesn't need to host a browsable page for a human sitting at
+// it, but the frame bytes themselves still have to exist somewhere a remote
+// viewer can pull them from). yolo_live.cpp stays the tool for a human
+// sitting at the Jetson itself to open in a browser and manually tune
+// (conf slider, recording reports); this binary is what full_mission.sh
+// runs during an actual flight.
+//
+// Every other behavior (settings, /target response shape, /conf, /start,
+// /stop, /data, TARGET_CONFIRM_FRAMES stability gate) is unchanged from
+// yolo_live.cpp on purpose, so target_distance.cpp and anything else that
+// already talks to yolo_live's HTTP API works against this binary
+// unmodified - only difference is what's NOT running (the "/" dashboard
+// page and its interactive controls).
 #include <arpa/inet.h>
 #include <climits>
 #include <csignal>
@@ -43,7 +56,7 @@
 namespace {
 
 // ---------------------------------------------------------------------------
-// SETTINGS - edit these (mirrors yolo_live.py's SETTINGS block)
+// SETTINGS - mirrors yolo_live.cpp's SETTINGS block; keep these two in sync.
 // ---------------------------------------------------------------------------
 constexpr int DEFAULT_RECORD_SEC = 30;
 constexpr double SAMPLE_INTERVAL_SEC = 0.5;
@@ -51,13 +64,11 @@ constexpr double LIVE_WINDOW_SEC = 40;
 
 const std::string LOG_PREFIX = "yolo_log";
 
-constexpr int PORT = 8002;  // same default as yolo_live.py, so
-                             // control/target_distance.cpp needs no changes
+constexpr int PORT = 8002;  // same as yolo_live.cpp - control/target_distance.cpp
+                             // doesn't care which binary is actually serving it
 
 constexpr double DEFAULT_CONF = 0.25;
-constexpr float IOU_THRES = 0.45f;  // yolov5 AutoShape's default iou, not exposed in the UI either
-// See trt_engine.hpp's YoloTrt ctor doc: FP16 measured mAP50 0.995 -> 0.659
-// on a GTX 1660 SUPER in this project; unverified on Jetson - leave false.
+constexpr float IOU_THRES = 0.45f;
 constexpr bool FP16 = false;
 
 constexpr int TARGET_CONFIRM_FRAMES = 5;
@@ -120,9 +131,6 @@ std::string exe_dir() {
     return slash == std::string::npos ? "." : full.substr(0, slash);
 }
 
-// Walks up from the executable's directory until it finds
-// setting/cam_sets.yaml, so the binary works regardless of which build
-// directory (cpp/build, cpp/, ...) it ends up in.
 std::string find_repo_root() {
     std::string dir = exe_dir();
     for (int i = 0; i < 8; ++i) {
@@ -178,7 +186,8 @@ void apply_wb_correction(cv::Mat& frame, const cv::Vec3f& gains_bgr) {
 }
 
 // ---------------------------------------------------------------------------
-// shared state - mirrors yolo_live.py's module-level state/history/rec dicts
+// shared state - same shape as yolo_live.cpp's, including the JPEG frame
+// fields /stream needs.
 // ---------------------------------------------------------------------------
 
 struct DetSummary {
@@ -204,7 +213,7 @@ struct SharedState {
     std::deque<double> cap_times;
     uint64_t cap_count = 0;
 
-    std::mutex frame_mutex;
+    std::mutex frame_mutex;  // guards everything below, including jpg_frame
     std::condition_variable frame_cv;
     std::vector<uint8_t> jpg_frame;
     uint64_t frame_gen = 0;
@@ -239,8 +248,7 @@ struct AppPaths {
     std::string weights_name;
 };
 
-// finish_locked(): caller must hold rec.mutex. Mirrors yolo_live.py's
-// finish_locked().
+// finish_locked(): caller must hold rec.mutex. Mirrors yolo_live.cpp's.
 void finish_locked(RecState& rec, const AppPaths& paths, const std::vector<std::string>& class_names, int img_size) {
     if (rec.rows.empty()) {
         rec.active = false;
@@ -310,7 +318,8 @@ SampleRow build_sample(SharedState& state, ConfState& conf_state, SysInfoReader&
 }
 
 // ---------------------------------------------------------------------------
-// rendering - draws boxes+labels the way yolov5's results.render() would
+// rendering - draws boxes+labels the way yolov5's results.render() would;
+// same as yolo_live.cpp's, needed here too since /stream is still served.
 // ---------------------------------------------------------------------------
 
 void draw_detections(cv::Mat& img, const std::vector<Detection>& dets, const std::vector<std::string>& class_names) {
@@ -338,7 +347,7 @@ void draw_detections(cv::Mat& img, const std::vector<Detection>& dets, const std
 }
 
 // ---------------------------------------------------------------------------
-// threads - grabber() / inferer() / sampler(), mirrors yolo_live.py
+// threads - grabber() / inferer() / sampler(), mirrors yolo_live.cpp.
 // ---------------------------------------------------------------------------
 
 void grabber(SharedState& state, cv::Vec3f wb_gains_bgr) {
@@ -377,6 +386,9 @@ void grabber(SharedState& state, cv::Vec3f wb_gains_bgr) {
     }
 }
 
+// Same detection/confirm logic as yolo_live.cpp's inferer(), including the
+// draw_detections()+cv::imencode() annotate/encode step - /stream still
+// needs a fresh JPEG each cycle here, same as yolo_live.cpp.
 void inferer(SharedState& state, YoloTrt& model, ConfState& conf_state, const std::vector<std::string>& class_names) {
     uint64_t last_gen = 0;
     std::deque<std::optional<std::string>> streak;  // None-slot for "no/unstable detection this frame"
@@ -486,9 +498,8 @@ void sampler(SharedState& state, ConfState& conf_state, SysInfoReader& sysinfo_r
 }
 
 // ---------------------------------------------------------------------------
-// JSON helpers - hand-rolled since this Jetson image has no jsoncpp-dev
-// headers (only the runtime .so); mirrors the manual approach
-// control/target_distance.cpp already uses on the consuming side.
+// JSON helpers - same hand-rolled approach as yolo_live.cpp (no jsoncpp-dev
+// headers on this Jetson image, only the runtime .so).
 // ---------------------------------------------------------------------------
 
 std::string json_num(double v) {
@@ -525,252 +536,6 @@ std::string row_fields_json(const SampleRow& r) {
     if (r.sys.clock_mhz) s << ",\"clock_mhz\":" << json_num(*r.sys.clock_mhz);
     if (r.sys.temp_c) s << ",\"temp_c\":" << json_num(*r.sys.temp_c);
     return s.str();
-}
-
-// ---------------------------------------------------------------------------
-// web page - identical HTML/CSS/JS to yolo_live.py's PAGE, so the front-end
-// needs no changes to talk to this binary instead of the Python one.
-// ---------------------------------------------------------------------------
-
-const char* PAGE = R"HTMLPAGE(<!doctype html><meta charset=utf-8>
-<meta name=viewport content='width=device-width,initial-scale=1'>
-<title>yolo monitor</title>
-<style>
- *{box-sizing:border-box}
- body{margin:0;padding:16px;background:#0d0f12;color:#e8eaed;
-      font-family:system-ui,-apple-system,sans-serif;max-width:1400px}
- h1{font-size:14px;font-weight:600;color:#9aa0a6;margin:0 0 10px}
- .ctl{display:flex;gap:8px;align-items:center;flex-wrap:wrap;
-      background:#16191d;border:1px solid #23272c;border-radius:8px;
-      padding:10px 12px;margin-bottom:12px}
- .ctl label{font-size:12.5px;color:#9aa0a6}
- input[type=number]{width:72px;background:#0d0f12;border:1px solid #3b4048;
-       color:#e8eaed;border-radius:5px;padding:6px 8px;font:inherit;
-       font-size:13px;font-variant-numeric:tabular-nums}
- input[type=range]{width:140px}
- button{background:#8ab4f8;color:#0d0f12;border:0;border-radius:5px;
-        padding:7px 15px;font:inherit;font-size:13px;font-weight:600;
-        cursor:pointer}
- button:hover{background:#a6c6fa}
- button.stop{background:#f28b82}
- button.stop:hover{background:#f5a29b}
- .st{font-size:12.5px;color:#6b7075;margin-left:auto}
- .bar{height:4px;background:#23272c;border-radius:2px;overflow:hidden;
-      margin-bottom:14px}
- .bar i{display:block;height:100%;background:#8ab4f8;width:0;
-        transition:width .4s linear}
- img{width:100%;border-radius:8px;display:block;background:#000;
-     margin-bottom:14px}
- .row{display:grid;grid-template-columns:1fr 232px;gap:14px;align-items:start}
- @media(max-width:820px){.row{grid-template-columns:1fr}}
- canvas{width:100%;height:220px;background:#16191d;border:1px solid #23272c;
-        border-radius:8px;display:block}
- .panel{background:#16191d;border:1px solid #23272c;border-radius:8px;
-        padding:12px 14px}
- .panel h2{font-size:11px;font-weight:600;color:#6b7075;margin:0 0 9px;
-           letter-spacing:.06em;text-transform:uppercase}
- .panel h2:not(:first-child){margin-top:15px;padding-top:13px;
-                             border-top:1px solid #23272c}
- .r{display:flex;justify-content:space-between;align-items:baseline;
-    padding:2.5px 0;font-size:12.5px}
- .r .k{color:#9aa0a6}
- .r .v{font-variant-numeric:tabular-nums;font-weight:600}
- .big{font-size:27px;font-weight:600;color:#8ab4f8;
-      font-variant-numeric:tabular-nums;line-height:1.1}
- .big small{font-size:12px;color:#6b7075;font-weight:400;margin-left:3px}
- .warn{color:#f6c445} .bad{color:#f28b82} .ok{color:#81c995}
-</style>
-<body>
-<h1>yolo monitor</h1>
-
-<div class=ctl>
-  <label for=sec>measure for</label>
-  <input id=sec type=number min=1 max=3600 value=__DEF__>
-  <label>seconds</label>
-  <button id=go>Record</button>
-  <label for=conf style="margin-left:10px">conf</label>
-  <input id=conf type=range min=0 max=1 step=0.01 value=__CONF__>
-  <span id=confval style="font-variant-numeric:tabular-nums">__CONF__</span>
-  <span class=st id=st>streaming</span>
-</div>
-<div class=bar><i id=prog></i></div>
-
-<img src="/stream">
-
-<div class=row>
-  <canvas id=chart></canvas>
-  <div class=panel>
-    <h2>detection</h2>
-    <div class=big><span id=dc>--</span><small>boxes now</small></div>
-    <div class=r><span class=k>top conf</span><span class=v id=topc>--</span></div>
-    <div class=r><span class=k>avg conf</span><span class=v id=avgc>--</span></div>
-
-    <h2>camera / inference</h2>
-    <div class=r><span class=k>resolution</span><span class=v id=res>--</span></div>
-    <div class=r><span class=k>capture fps</span><span class=v id=capfps>--</span></div>
-    <div class=r><span class=k>infer fps</span><span class=v id=inffps>--</span></div>
-    <div class=r><span class=k>latency</span><span class=v id=lat>--</span></div>
-
-    <h2>jetson nano</h2>
-    <div class=r><span class=k>cpu</span><span class=v id=cpu>--</span></div>
-    <div class=r><span class=k>ram</span><span class=v id=ram>--</span></div>
-    <div class=r><span class=k>clock</span><span class=v id=clk>--</span></div>
-    <div class=r><span class=k>temp</span><span class=v id=tmp>--</span></div>
-
-    <h2>last saved</h2>
-    <div class=r><span class=v id=saved style="font-size:11.5px">--</span></div>
-  </div>
-</div>
-
-<script>
-const cv=document.getElementById('chart'), cx=cv.getContext('2d');
-const $=id=>document.getElementById(id);
-let recording=false, xmax=__WIN__, chartTop=1;
-
-function draw(pts){
-  const dpr=window.devicePixelRatio||1, W=cv.clientWidth, H=cv.clientHeight;
-  cv.width=W*dpr; cv.height=H*dpr; cx.setTransform(dpr,0,0,dpr,0,0);
-  cx.clearRect(0,0,W,H);
-  const L=38,R=10,T=12,B=20, w=W-L-R, h=H-T-B, ymax=chartTop*1.15||1;
-
-  cx.strokeStyle='#23272c'; cx.fillStyle='#6b7075';
-  cx.font='10px system-ui'; cx.lineWidth=1;
-  for(let i=0;i<=4;i++){
-    const v=ymax*i/4, y=T+h-(v/ymax)*h;
-    cx.beginPath(); cx.moveTo(L,y); cx.lineTo(L+w,y); cx.stroke();
-    cx.fillText(v.toFixed(1), 8, y+3);
-  }
-  cx.fillStyle='#6b7075'; cx.fillText('infer fps', L+w-46, T+8);
-
-  if(!pts.length) return;
-  const xs=t=>L+(xmax?Math.min(t/xmax,1):0)*w;
-  const ys=v=>T+h-(Math.min(v,ymax)/ymax)*h;
-  const color=recording?'#8ab4f8':'#5f6976';
-
-  cx.beginPath(); cx.moveTo(xs(pts[0].t), ys(pts[0].v));
-  pts.forEach(p=>cx.lineTo(xs(p.t), ys(p.v)));
-  cx.lineTo(xs(pts[pts.length-1].t), T+h); cx.lineTo(xs(pts[0].t), T+h);
-  cx.closePath();
-  const g=cx.createLinearGradient(0,T,0,T+h);
-  g.addColorStop(0, recording?'rgba(138,180,248,.3)':'rgba(95,105,118,.22)');
-  g.addColorStop(1,'rgba(0,0,0,0)');
-  cx.fillStyle=g; cx.fill();
-
-  cx.beginPath(); cx.moveTo(xs(pts[0].t), ys(pts[0].v));
-  pts.forEach(p=>cx.lineTo(xs(p.t), ys(p.v)));
-  cx.strokeStyle=color; cx.lineWidth=1.8; cx.stroke();
-
-  cx.fillStyle='#6b7075';
-  cx.fillText('0s', L, H-6);
-  cx.fillText(xmax.toFixed(0)+'s', L+w-20, H-6);
-}
-
-$('go').onclick=async()=>{
-  if(recording){ await fetch('/stop'); }
-  else{
-    const s=parseFloat($('sec').value)||30;
-    await fetch('/start?sec='+s);
-  }
-  tick();
-};
-
-$('conf').oninput=()=>{ $('confval').textContent=$('conf').value; };
-$('conf').onchange=async()=>{
-  await fetch('/conf?value='+$('conf').value);
-};
-
-async function tick(){
-  try{
-    const s=await (await fetch('/data')).json();
-    const c=s.current||{};
-    recording=s.recording; xmax=s.xmax||__WIN__;
-
-    $('dc').textContent=c.det_count??0;
-    $('topc').textContent=c.top_conf!=null?c.top_conf.toFixed(2):'--';
-    $('avgc').textContent=c.avg_conf!=null?c.avg_conf.toFixed(2):'--';
-
-    $('res').textContent=s.width+'x'+s.height;
-    $('capfps').textContent=(c.cap_fps??0).toFixed(1);
-    $('inffps').textContent=(c.infer_fps??0).toFixed(1);
-    $('lat').textContent=(c.latency_ms??0).toFixed(0)+' ms';
-
-    const cpu=c.cpu_pct;
-    $('cpu').textContent=cpu!=null?cpu.toFixed(0)+' %':'--';
-    $('cpu').className='v'+(cpu>85?' bad':cpu>60?' warn':'');
-    $('ram').textContent=c.mem_used_mb!=null
-      ? c.mem_used_mb+' / '+c.mem_total_mb+' MB':'--';
-    $('clk').textContent=c.clock_mhz?c.clock_mhz+' MHz':'--';
-    const t=c.temp_c;
-    $('tmp').textContent=t!=null?t.toFixed(1)+' C':'--';
-    $('tmp').className='v'+(t>75?' bad':t>65?' warn':' ok');
-    $('saved').textContent=s.saved||'--';
-
-    $('go').textContent=recording?'Stop':'Record';
-    $('go').className=recording?'stop':'';
-    $('sec').disabled=recording;
-    $('st').textContent=recording
-      ? 'recording '+s.elapsed.toFixed(0)+' / '+s.duration.toFixed(0)+'s'
-      : 'streaming (idle)';
-    $('prog').style.width=recording
-      ? Math.min(100,(s.elapsed/s.duration)*100)+'%' : '0%';
-
-    const pts=(s.points||[]).map(p=>({t:p.t, v:p.infer_fps}));
-    chartTop=Math.max(1, ...pts.map(p=>p.v), c.infer_fps||0);
-    draw(pts);
-  }catch(err){}
-}
-setInterval(tick, 500); tick();
-window.addEventListener('resize', ()=>tick());
-</script>
-)HTMLPAGE";
-
-std::string render_page(double conf_value) {
-    std::string page = PAGE;
-    auto replace_all = [](std::string& s, const std::string& from, const std::string& to) {
-        size_t pos = 0;
-        while ((pos = s.find(from, pos)) != std::string::npos) {
-            s.replace(pos, from.size(), to);
-            pos += to.size();
-        }
-    };
-    std::ostringstream conf_s;
-    conf_s << conf_value;
-    replace_all(page, "__DEF__", std::to_string(DEFAULT_RECORD_SEC));
-    replace_all(page, "__CONF__", conf_s.str());
-    std::ostringstream win_s;
-    win_s << LIVE_WINDOW_SEC;
-    replace_all(page, "__WIN__", win_s.str());
-    return page;
-}
-
-// ---------------------------------------------------------------------------
-// networking helpers - lan_ip()/hostname(), matches yolo_live.py's startup banner
-// ---------------------------------------------------------------------------
-
-std::string lan_ip() {
-    int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd < 0) return "127.0.0.1";
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(80);
-    inet_pton(AF_INET, "8.8.8.8", &addr.sin_addr);
-    std::string ip = "127.0.0.1";
-    if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
-        sockaddr_in local{};
-        socklen_t len = sizeof(local);
-        if (getsockname(fd, reinterpret_cast<sockaddr*>(&local), &len) == 0) {
-            char buf[INET_ADDRSTRLEN];
-            if (inet_ntop(AF_INET, &local.sin_addr, buf, sizeof(buf))) ip = buf;
-        }
-    }
-    ::close(fd);
-    return ip;
-}
-
-std::string hostname() {
-    char buf[256];
-    if (gethostname(buf, sizeof(buf)) == 0) return buf;
-    return "localhost";
 }
 
 }  // namespace
@@ -863,15 +628,12 @@ int run() {
     HttpServer server(PORT);
     g_server_for_signal = &server;
 
-    server.add_route("/", [&](const HttpRequest&, HttpConnection& conn) {
-        double conf_value;
-        {
-            std::lock_guard<std::mutex> lock(conf_state.mutex);
-            conf_value = conf_state.value;
-        }
-        conn.send(200, "text/html; charset=utf-8", render_page(conf_value));
-    });
-
+    // No "/" dashboard page here - see the top-of-file comment. /stream is
+    // still served (for a remote GCS dashboard to pull directly), just
+    // without the browsable page wrapping it. /conf,/start,/stop,/data are
+    // kept because they're handy for headless debugging over curl (e.g.
+    // checking infer fps/conf without a browser) and cost nothing extra
+    // when nobody calls them.
     server.add_route("/conf", [&](const HttpRequest& req, HttpConnection& conn) {
         std::string val_str;
         {
@@ -887,7 +649,7 @@ int run() {
             std::lock_guard<std::mutex> lock(conf_state.mutex);
             conf_state.value = v;
         } catch (...) {
-            // matches yolo_live.py: an unparsable value leaves conf_state unchanged
+            // matches yolo_live.cpp: an unparsable value leaves conf_state unchanged
         }
         double current;
         {
@@ -1028,9 +790,8 @@ int run() {
         }
     });
 
-    std::cout << "open this on your phone/PC : http://" << lan_ip() << ":" << PORT << "/" << std::endl;
-    std::cout << "(mDNS alt, may not resolve): http://" << hostname() << ".local:" << PORT << "/" << std::endl;
-    std::cout << "streaming. drag conf, or set the seconds and press Record." << std::endl;
+    std::cout << "headless - no dashboard page. /target on http://127.0.0.1:" << PORT
+              << "/target, /stream on http://127.0.0.1:" << PORT << "/stream" << std::endl;
     std::cout << "ctrl-c to quit." << std::endl;
 
     server.serve_forever();

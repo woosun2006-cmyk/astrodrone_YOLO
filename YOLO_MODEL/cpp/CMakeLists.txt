@@ -46,3 +46,23 @@ target_link_libraries(yolo_live PRIVATE
     ${NVINFER_PLUGIN_LIB}
     Threads::Threads
 )
+
+# Headless twin of yolo_live for real flights - see yolo_headless.cpp's
+# top-of-file comment. Same model/camera/inference, no dashboard/video.
+add_executable(yolo_headless
+    yolo_headless.cpp
+    trt_engine.cpp
+    http_server.cpp
+    sysinfo.cpp
+    report.cpp
+    ../../control/yaml_settings.cpp
+)
+
+target_link_libraries(yolo_headless PRIVATE
+    ${OpenCV_LIBS}
+    ${CUDA_LIBRARIES}
+    ${NVINFER_LIB}
+    ${NVONNXPARSER_LIB}
+    ${NVINFER_PLUGIN_LIB}
+    Threads::Threads
+)
