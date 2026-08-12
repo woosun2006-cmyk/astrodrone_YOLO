@@ -37,10 +37,14 @@ public:
     uint8_t target_system() const { return target_system_; }
     uint8_t target_component() const { return target_component_; }
 
+    // True once a flight-controller HEARTBEAT has fixed the command target.
+    bool has_target() const { return have_target_; }
+
 private:
     std::unique_ptr<Transport> transport_;
     uint8_t target_system_ = 0;
     uint8_t target_component_ = 0;
+    bool have_target_ = false;
 };
 
 // Opens a connection without waiting for a heartbeat, mirroring

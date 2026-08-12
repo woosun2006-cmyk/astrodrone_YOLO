@@ -748,7 +748,8 @@ ApproachOutcome approach_target(const YamlValue& track, const AltitudeLimit& alt
 // A heartbeat gap past max_heartbeat_gap_sec still throws - if the link
 // itself is gone, waiting silently forever would just hide that instead of
 // surfacing it.
-void wait_for_auto_armed(MavConnection& vehicle, double max_heartbeat_gap_sec) {
+void wait_for_auto_armed(MavConnection& vehicle, double max_heartbeat_gap_sec,
+                          HealthState& health) {
     auto last_heartbeat = std::chrono::steady_clock::now();
     auto last_status_print = last_heartbeat - std::chrono::seconds(10);
     while (true) {
@@ -764,6 +765,15 @@ void wait_for_auto_armed(MavConnection& vehicle, double max_heartbeat_gap_sec) {
             mavlink_msg_heartbeat_decode(&msg, &hb);
             last_heartbeat = now;
             if (is_armed_from_heartbeat(hb) && hb.custom_mode == copter_mode_mapping().at("AUTO")) {
+                // Hand the caller the heartbeat this decision was made on.
+                // wait_for_lock() checks have_armed/armed/custom_mode before it
+                // has had a chance to receive one of its own (HEARTBEAT is 1Hz,
+                // its first poll is 0.1s), so without this it bails instantly
+                // and the intercept never reaches the lock stage.
+                health.last_heartbeat = now;
+                health.have_armed = true;
+                health.armed = true;
+                health.custom_mode = hb.custom_mode;
                 return;
             }
         }
@@ -887,11 +897,10 @@ void run_auto_intercept(const YamlValue& track, const AltitudeLimit& alt_limit,
               << "s)" << std::endl;
 
     while (true) {
-        wait_for_auto_armed(vehicle, health_limit.max_heartbeat_gap_sec);
+        HealthState health;
+        wait_for_auto_armed(vehicle, health_limit.max_heartbeat_gap_sec, health);
         std::cout << "[AUTO_INTERCEPT] AUTO + armed 확인됨 - 타겟 확정 대기." << std::endl;
 
-        HealthState health;
-        health.last_heartbeat = std::chrono::steady_clock::now();
         if (!wait_for_lock(vehicle, receiver, health_limit, link_stale_ms, lock_confirm_sec, health)) {
             std::cout << "[AUTO_INTERCEPT] AUTO/armed 상태 이탈 - 대기 상태로 복귀." << std::endl;
             continue;

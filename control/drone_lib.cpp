@@ -33,8 +33,20 @@ bool MavConnection::recv_match(const std::vector<uint32_t>& msg_ids, mavlink_mes
             mavlink_message_t msg;
             mavlink_status_t status;
             if (mavlink_parse_char(MAVLINK_COMM_0, buf[i], &msg, &status)) {
-                target_system_ = msg.sysid;
-                target_component_ = msg.compid;
+                // Latch the command target once, from the first HEARTBEAT that
+                // looks like a flight controller. Taking it from every parsed
+                // message let any other talker on the link (a GCS heartbeat is
+                // sysid 255, and ArduPilot forwards those between its serial
+                // ports) redirect our commands at a system that never answers.
+                if (!have_target_ && msg.msgid == MAVLINK_MSG_ID_HEARTBEAT) {
+                    mavlink_heartbeat_t hb;
+                    mavlink_msg_heartbeat_decode(&msg, &hb);
+                    if (hb.autopilot != MAV_AUTOPILOT_INVALID && hb.type != MAV_TYPE_GCS) {
+                        target_system_ = msg.sysid;
+                        target_component_ = msg.compid;
+                        have_target_ = true;
+                    }
+                }
                 if (msg_ids.empty() ||
                     std::find(msg_ids.begin(), msg_ids.end(), msg.msgid) != msg_ids.end()) {
                     out = msg;
@@ -46,10 +58,22 @@ bool MavConnection::recv_match(const std::vector<uint32_t>& msg_ids, mavlink_mes
 }
 
 bool MavConnection::wait_heartbeat(double timeout_sec, mavlink_heartbeat_t* out) {
+    using clock = std::chrono::steady_clock;
+    auto deadline = clock::now() + std::chrono::duration<double>(timeout_sec);
     mavlink_message_t msg;
-    if (!recv_match({MAVLINK_MSG_ID_HEARTBEAT}, msg, timeout_sec)) return false;
-    if (out) mavlink_msg_heartbeat_decode(&msg, out);
-    return true;
+    // Keep reading until recv_match() has latched a flight-controller target.
+    // Returning on a GCS heartbeat would leave target_system_ at 0, and every
+    // command sent right after connecting would be addressed to nobody.
+    while (true) {
+        auto now = clock::now();
+        if (now >= deadline) return false;
+        double remaining = std::chrono::duration<double>(deadline - now).count();
+        if (!recv_match({MAVLINK_MSG_ID_HEARTBEAT}, msg, remaining)) return false;
+        if (have_target_) {
+            if (out) mavlink_msg_heartbeat_decode(&msg, out);
+            return true;
+        }
+    }
 }
 
 void MavConnection::send(const mavlink_message_t& msg) {
