@@ -35,14 +35,17 @@ battery_limit:
                             # logged but not treated as a breach - an
                             # unreported value can't be assumed safe *or*
                             # unsafe.
-  min_voltage_v: 14.8       # SYS_STATUS.voltage_battery. 4S LiPo, 14.8V is
-                            # this pack's nominal (3.7V/cell) rating - under
-                            # load a real 4S sags below nominal well before
-                            # it's actually empty, so this may trip earlier
-                            # than expected. Confirm against real flight
-                            # logs and adjust (a common convention is
-                            # ~3.5V/cell = 14.0V for "start heading back",
-                            # ~3.3V/cell = 13.2V for "land now").
+  min_voltage_v: 14.0       # SYS_STATUS.voltage_battery. Matches this
+                            # vehicle's own Pixhawk 6C mini BATT_LOW_VOLT=14.0
+                            # (read via mavlink 2026-08-11, BATT_CRT_VOLT=13.6
+                            # is its harder critical/land threshold) - so
+                            # control.cpp's LOITER handoff triggers together
+                            # with the flight controller's own low-battery
+                            # failsafe (BATT_FS_LOW_ACT=1) instead of at an
+                            # arbitrary nominal-pack voltage. Re-read from the
+                            # FC (setting/inspect_pixhawk_audio.py style
+                            # param_request_read) if the battery/BATT_* params
+                            # ever change.
 
 heartbeat_limit:
   # Ongoing link-loss check while already connected - different from
