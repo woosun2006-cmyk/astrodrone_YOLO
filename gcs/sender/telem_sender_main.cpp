@@ -1,8 +1,17 @@
 // Reads real vehicle/target state and pushes it through FecEncoder ->
 // UdpSender at rate_hz. See gcs/PLAN.md for the wire-format/FEC design.
 //
-// mode/armed come straight from MAVLink HEARTBEAT (this process opens the
-// Pixhawk serial port directly, like check_link.cpp/check_alt.cpp do).
+// mode/armed come straight from MAVLink HEARTBEAT, read over
+// setting/MAVLink.yaml's real.proxy_udp address on the mavlink_gcs port
+// (setting/port.yaml) -- like control.cpp/target_distance.cpp, this does
+// NOT open the Pixhawk's serial port directly. That used to be a real
+// problem (see git history/control/README.md): opening the serial port
+// directly, the same way check_link.cpp/check_alt.cpp do, meant only one
+// process could reliably own it at a time, so this would contend with
+// control.cpp/target_distance.cpp during an actual flight. Fixed by running
+// control/mavlink_proxy.cpp - see its top comment - which owns the serial
+// port alone and fans it out to mavlink_control/mavlink_sensor/mavlink_gcs.
+//
 // altitude + target-detection state are NOT read independently here --
 // they're read from target_distance.cpp's existing TargetRangeMsg loopback
 // broadcast (control/target_link.hpp), which already fuses YOLO's /target
@@ -10,16 +19,6 @@
 // Reusing that avoids a second HTTP client and a second ALTITUDE stream
 // request; it does mean this telemetry alt/target fields go stale if
 // target_distance.cpp isn't running.
-//
-// KNOWN LIMITATION: this opens setting/MAVLink.yaml's real.serial address
-// directly, the same way check_link.cpp/check_alt.cpp/target_distance.cpp
-// each already do. Only one process can reliably own that serial port at a
-// time -- fine for the standalone testing this was built for, but it WILL
-// contend with control.cpp/target_distance.cpp if run alongside them during
-// an actual flight. Fixing that for real needs the MAVLink relay
-// (mavlink-router fanning the serial stream out to setting/port.yaml's
-// mavlink_* UDP ports) that setting/port.yaml already documents but nothing
-// in this repo sets up yet.
 
 #include <unistd.h>
 #include <limits.h>
@@ -94,19 +93,17 @@ struct VehicleState {
 };
 
 // Retries open_connection()+wait_heartbeat() until one succeeds or g_stop
-// is set (returns nullptr in that case). Both can throw (e.g. the serial
-// device node disappearing -- USB hiccup, cable wiggle) as well as just
+// is set (returns nullptr in that case). Both can throw (e.g. mavlink_proxy
+// not running yet, so nothing is bound on the other end) as well as just
 // time out without a heartbeat; either way this is a telemetry/debug feed,
 // not the flight-control link, so it should keep trying rather than take
 // the whole process down. Also called mid-run to reconnect after a read
 // error further down.
-std::unique_ptr<MavConnection> connect_mavlink(const YamlValue& serial, double heartbeat_timeout) {
+std::unique_ptr<MavConnection> connect_mavlink(const std::string& address, double heartbeat_timeout) {
     while (!g_stop) {
         try {
-            std::fprintf(stderr, "telem_sender: waiting for Pixhawk heartbeat on %s...\n",
-                         serial["address"].as_string().c_str());
-            auto mav = open_connection(serial["address"].as_string(),
-                                        static_cast<int>(serial["baud"].as_long()));
+            std::fprintf(stderr, "telem_sender: waiting for Pixhawk heartbeat on %s...\n", address.c_str());
+            auto mav = open_connection(address);
             if (mav->wait_heartbeat(heartbeat_timeout)) {
                 std::fprintf(stderr, "telem_sender: connected (system=%d component=%d)\n",
                              mav->target_system(), mav->target_component());
@@ -162,14 +159,18 @@ int main() {
     const long rate_hz = telem.get_long_or("rate_hz", 10);
 
     YamlValue mav_cfg = drone::load_mavlink_settings();
-    YamlValue serial = mav_cfg["real"]["serial"];
     const double heartbeat_timeout = mav_cfg.get_double_or("heartbeat_timeout", 20);
     const long target_udp_port = mav_cfg["target_track"].get_long_or("udp_port", 15020);
+
+    YamlValue port_cfg = drone::load_port_settings();
+    const long mavlink_gcs_port = port_cfg.get_long_or("mavlink_gcs", 14552);
+    const std::string mav_address =
+        with_port(mav_cfg["real"]["proxy_udp"]["address"].as_string(), mavlink_gcs_port);
 
     std::fprintf(stderr, "telem_sender: -> %s:%ld lanes=%ld group_size=%ld rate=%ldhz\n",
                  dest_host.c_str(), dest_port, lanes, group_size, rate_hz);
 
-    auto mav = connect_mavlink(serial, heartbeat_timeout);
+    auto mav = connect_mavlink(mav_address, heartbeat_timeout);
     if (!mav) {
         std::fprintf(stderr, "telem_sender: stopped before a Pixhawk connection was made\n");
         return 0;
@@ -223,7 +224,7 @@ int main() {
         } catch (const std::exception& e) {
             std::fprintf(stderr, "telem_sender: MAVLink read error (%s), reconnecting...\n", e.what());
             vehicle.have_heartbeat = false;
-            mav = connect_mavlink(serial, heartbeat_timeout);
+            mav = connect_mavlink(mav_address, heartbeat_timeout);
             if (!mav) break;  // g_stop was set while reconnecting
             request_message_interval(*mav, MAVLINK_MSG_ID_ALTITUDE, static_cast<double>(rate_hz));
         }

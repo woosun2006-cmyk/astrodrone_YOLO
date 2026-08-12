@@ -11,6 +11,7 @@ yolo_live: 8002   # YOLO_MODEL/yolo_live.py -> http://192.168.0.197:8002/
 # configured to fan the Pixhawk stream out to both of these ports.
 mavlink_control: 14550  # control.cpp - the only process that arms/flies
 mavlink_sensor: 14551   # target_distance.cpp, emergency.cpp - read-only monitors
+mavlink_gcs: 14552      # gcs/sender/telem_sender - read-only monitor
 
 # gcs/sender telem_sender - JSON telemetry + interleaved XOR-FEC UDP stream
 # (Jetson -> laptop GCS). Different range from the HTTP/MAVLink ports above
