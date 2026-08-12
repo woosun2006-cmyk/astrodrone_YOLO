@@ -12,6 +12,12 @@ yolo_live: 8002   # YOLO_MODEL/yolo_live.py -> http://192.168.0.197:8002/
 mavlink_control: 14550  # control.cpp - the only process that arms/flies
 mavlink_sensor: 14551   # target_distance.cpp, emergency.cpp - read-only monitors
 mavlink_gcs: 14552      # gcs/sender/telem_sender - read-only monitor
+mavlink_motor_test: 14553  # control/motor_test.cpp - ground motor test, manual only.
+                            # Separate from mavlink_control so it can never
+                            # bind-conflict with control.cpp if both happen to
+                            # be started at once (see mav_transport.cpp's
+                            # UdpTransport doc comment on why sharing a port
+                            # steals the other process's packets).
 
 # gcs/sender telem_sender - JSON telemetry + interleaved XOR-FEC UDP stream
 # (Jetson -> laptop GCS). Different range from the HTTP/MAVLink ports above

@@ -51,6 +51,9 @@ target_link_libraries(target_distance PRIVATE drone_lib target_json Threads::Thr
 add_executable(mavlink_proxy mavlink_proxy.cpp)
 target_link_libraries(mavlink_proxy PRIVATE drone_lib Threads::Threads)
 
+add_executable(motor_test motor_test.cpp)
+target_link_libraries(motor_test PRIVATE drone_lib Threads::Threads)
+
 if(BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
