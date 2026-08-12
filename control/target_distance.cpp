@@ -214,10 +214,23 @@ int run(int argc, char** argv) {
 
     while (true) {
         mavlink_message_t msg;
-        if (connection->recv_match({MAVLINK_MSG_ID_ALTITUDE}, msg, cycle_sec)) {
-            mavlink_altitude_t alt;
-            mavlink_msg_altitude_decode(&msg, &alt);
-            altitude_m = alt.altitude_relative;
+        // GLOBAL_POSITION_INT is accepted alongside ALTITUDE because ArduPilot
+        // denies the SET_MESSAGE_INTERVAL request for ALTITUDE (msgid 141) and
+        // never streams it, while relative_alt carries the same altitude above
+        // home and is always available. ALTITUDE still wins when a vehicle does
+        // send it.
+        if (connection->recv_match({MAVLINK_MSG_ID_ALTITUDE,
+                                     MAVLINK_MSG_ID_GLOBAL_POSITION_INT},
+                                    msg, cycle_sec)) {
+            if (msg.msgid == MAVLINK_MSG_ID_ALTITUDE) {
+                mavlink_altitude_t alt;
+                mavlink_msg_altitude_decode(&msg, &alt);
+                altitude_m = alt.altitude_relative;
+            } else {
+                mavlink_global_position_int_t gpos;
+                mavlink_msg_global_position_int_decode(&msg, &gpos);
+                altitude_m = gpos.relative_alt / 1000.0;  // mm -> m
+            }
             have_altitude = true;
             last_altitude_time = std::chrono::steady_clock::now();
         }
