@@ -30,21 +30,6 @@ find_package(Threads REQUIRED)
 add_executable(control control.cpp)
 target_link_libraries(control PRIVATE drone_lib Threads::Threads)
 
-add_executable(check_link check_link.cpp)
-target_link_libraries(check_link PRIVATE drone_lib Threads::Threads)
-
-add_executable(get_gps_location get_gps_location.cpp)
-target_link_libraries(get_gps_location PRIVATE drone_lib Threads::Threads)
-
-add_executable(test_arm test_arm.cpp)
-target_link_libraries(test_arm PRIVATE drone_lib Threads::Threads)
-
-add_executable(check_alt check_alt.cpp)
-target_link_libraries(check_alt PRIVATE drone_lib Threads::Threads)
-
-add_executable(emergency emergency.cpp)
-target_link_libraries(emergency PRIVATE drone_lib Threads::Threads)
-
 add_executable(target_distance target_distance.cpp)
 target_link_libraries(target_distance PRIVATE drone_lib target_json Threads::Threads)
 
