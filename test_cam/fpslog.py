@@ -649,9 +649,13 @@ $('qual').onchange=async()=>{ await fetch('/quality?value='+$('qual').value); };
 $('rgbon').onchange=async()=>{
   await fetch('/rgb?enabled='+($('rgbon').checked?'1':'0'));
 };
+let rgbTimer=null;
 const rgbSlider=(id,val,label)=>{
-  $(id).oninput=()=>{ $(label).textContent=$(id).value; };
-  $(id).onchange=async()=>{ await fetch('/rgb?'+val+'='+$(id).value); };
+  $(id).oninput=()=>{
+    $(label).textContent=$(id).value;
+    clearTimeout(rgbTimer);
+    rgbTimer=setTimeout(()=>fetch('/rgb?'+val+'='+$(id).value), 60);
+  };
 };
 rgbSlider('rr','r','rrval'); rgbSlider('rg','g','rgval'); rgbSlider('rb','b','rbval');
 $('rgbsave').onclick=async()=>{

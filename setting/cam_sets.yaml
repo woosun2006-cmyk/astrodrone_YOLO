@@ -12,9 +12,9 @@
 # sliders and hit Save there - it rewrites just these three numbers here.
 # camserver.py and yolo_live.py both read this on startup.
 wb_correction:
-  red_gain: 0.797
-  green_gain: 1.070
-  blue_gain: 0.992
+  red_gain: 0.953
+  green_gain: 0.953
+  blue_gain: 0.984
 
 # Coordinate convention for YOLO detection output (drone-control frame, not
 # pixel frame). Origin (0,0) is the center of the frame, not the top-left
