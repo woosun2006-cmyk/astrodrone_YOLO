@@ -146,7 +146,7 @@ GCS(`scripts/gcs.sh`) 단독 테스트 중 실제로 발견한 두 가지 실제
 - `add_executable(control_sim control_sim.cpp)` /
   `target_link_libraries(control_sim ...)` 두 줄 제거.
 
-### 2. target_distance.cpp - 픽셀->실거리 변환 수정 필요 (고도 미반영)
+### 2. target_distance.cpp - 픽셀->실거리 변환 수정 필요 (고도 미반영 - 실 비행을 통한 실험적 데이터로 거리 측정)
 - 현재 `ground_offset_m = hypot(x_px, y_px) * pixel_to_meter`로, 고도와
   무관하게 고정 배율만 곱해서 계산 중.
 - 실제로는 고도에 따라 카메라가 담는 지상 범위가 달라지므로, 같은 픽셀
