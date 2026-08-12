@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <chrono>
+#include <memory>
 #include <cmath>
 #include <ctime>
 #include <fstream>
@@ -376,7 +377,8 @@ enum class ApproachOutcome { kLanded, kHandedBack };
 // maybe present another target later).
 ApproachOutcome approach_target(const YamlValue& track, const AltitudeLimit& alt_limit,
                                  const HealthLimit& health_limit, double duration_sec,
-                                 const std::string& resume_mode = "") {
+                                 const std::string& resume_mode = "",
+                                 TargetRangeReceiver* shared_receiver = nullptr) {
     int udp_port = static_cast<int>(track.get_long_or("udp_port", 15020));
     double cycle_ms = track.get_double_or("control_cycle_ms", 50);
     double max_forward = track.get_double_or("max_forward_speed", 1.5);
@@ -420,7 +422,15 @@ ApproachOutcome approach_target(const YamlValue& track, const AltitudeLimit& alt
     request_message_interval(vehicle, MAVLINK_MSG_ID_EKF_STATUS_REPORT, health_limit.poll_rate_hz);
     // HEARTBEAT is broadcast on its own (~1 Hz) without needing a request.
 
-    TargetRangeReceiver receiver(udp_port);
+    // Reuse the caller's receiver when it has one. Binding a second socket to
+    // udp_port while run_auto_intercept() still holds the first means this loop
+    // never receives anything and reports LOST while ranges are still arriving.
+    std::unique_ptr<TargetRangeReceiver> owned_receiver;
+    if (shared_receiver == nullptr) {
+        owned_receiver.reset(new TargetRangeReceiver(udp_port));
+        shared_receiver = owned_receiver.get();
+    }
+    TargetRangeReceiver& receiver = *shared_receiver;
     FlightLogger logger(resolve_log_dir());
     std::cout << "타겟 접근 모드 시작 (UDP " << udp_port << ", 주기 " << cycle_ms << "ms, 최대 "
               << duration_sec << "초, 고도제한 " << alt_limit.soft_limit_m << "~"
@@ -496,9 +506,14 @@ ApproachOutcome approach_target(const YamlValue& track, const AltitudeLimit& alt
         // Opportunistically pick up whatever vehicle-health telemetry has
         // arrived since the last tick (see kHealthPollTimeoutSec above).
         mavlink_message_t hmsg;
+        // Foreign traffic must not describe this vehicle: a GCS heartbeats as
+        // sysid 255, disarmed, and letting that reach apply_health_message()
+        // below tripped the unexpected-disarm guard mid-intercept. The test
+        // gates the whole block because was_armed is captured inside it.
         if (vehicle.recv_match({MAVLINK_MSG_ID_SYS_STATUS, MAVLINK_MSG_ID_GPS_RAW_INT,
                                  MAVLINK_MSG_ID_HEARTBEAT, MAVLINK_MSG_ID_EKF_STATUS_REPORT},
-                                hmsg, kHealthPollTimeoutSec)) {
+                                hmsg, kHealthPollTimeoutSec) &&
+            hmsg.sysid == vehicle.target_system()) {
             // Captured before apply_health_message() below overwrites it -
             // that function only touches health.armed on a HEARTBEAT
             // message, so for any other msgid this stays equal to
@@ -760,7 +775,9 @@ void wait_for_auto_armed(MavConnection& vehicle, double max_heartbeat_gap_sec,
                                       "초 이상 끊김 - 픽스호크 응답 없음");
         }
         mavlink_message_t msg;
-        if (vehicle.recv_match({MAVLINK_MSG_ID_HEARTBEAT}, msg, 0.5)) {
+        if (vehicle.recv_match({MAVLINK_MSG_ID_HEARTBEAT}, msg, 0.5) &&
+            msg.sysid == vehicle.target_system()) {
+            // Same reason as wait_for_lock(): a GCS heartbeat is not the vehicle.
             mavlink_heartbeat_t hb;
             mavlink_msg_heartbeat_decode(&msg, &hb);
             last_heartbeat = now;
@@ -822,7 +839,13 @@ bool wait_for_lock(MavConnection& vehicle, TargetRangeReceiver& receiver, const 
         if (vehicle.recv_match({MAVLINK_MSG_ID_SYS_STATUS, MAVLINK_MSG_ID_GPS_RAW_INT,
                                  MAVLINK_MSG_ID_HEARTBEAT, MAVLINK_MSG_ID_EKF_STATUS_REPORT},
                                 hmsg, kPollTimeoutSec)) {
-            apply_health_message(hmsg, health, now);
+            // Only the vehicle's own messages describe the vehicle. A GCS on the
+            // same link heartbeats as sysid 255, disarmed, custom_mode 0; letting
+            // that through overwrote armed/custom_mode once a second and dropped
+            // us straight back out of the lock wait.
+            if (hmsg.sysid == vehicle.target_system()) {
+                apply_health_message(hmsg, health, now);
+            }
         }
 
         double heartbeat_gap = std::chrono::duration<double>(now - health.last_heartbeat).count();
@@ -930,7 +953,8 @@ void run_auto_intercept(const YamlValue& track, const AltitudeLimit& alt_limit,
         }
 
         ApproachOutcome outcome =
-            approach_target(track, alt_limit, health_limit, intercept_duration_sec, kResumeMode);
+            approach_target(track, alt_limit, health_limit, intercept_duration_sec, kResumeMode,
+                             &receiver);
         if (outcome == ApproachOutcome::kLanded) {
             std::cout << "[AUTO_INTERCEPT] 비상 착륙으로 종료 - 프로그램을 마칩니다." << std::endl;
             return;
