@@ -194,6 +194,20 @@ int run(int argc, char** argv) {
 
     request_message_interval(*connection, MAVLINK_MSG_ID_ALTITUDE, 1000.0 / args.sense_cycle_ms);
 
+    // ArduPilot sends next to nothing on a channel that has not asked. Without
+    // this the companion link carries only HEARTBEAT/STATUSTEXT and no position
+    // at all, so altitude_valid never becomes 1. REQUEST_DATA_STREAM is the
+    // mechanism ArduPilot honours here - SET_MESSAGE_INTERVAL above is denied
+    // for ALTITUDE, and is left in place only for controllers that do accept it.
+    {
+        mavlink_message_t stream_req;
+        mavlink_msg_request_data_stream_pack(
+            255, 0, &stream_req, connection->target_system(),
+            connection->target_component(), MAV_DATA_STREAM_ALL,
+            static_cast<uint16_t>(1000.0 / args.sense_cycle_ms), 1);
+        connection->send(stream_req);
+    }
+
     TargetRangeSender sender(args.udp_port);
     double altitude_m = 0.0;
     bool have_altitude = false;  // an ALTITUDE reading has arrived at least once
