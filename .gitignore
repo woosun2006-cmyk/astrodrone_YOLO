@@ -2,3 +2,7 @@ __pycache__/
 *.pyc
 *.tlog
 *.tlog.raw
+
+# control.cpp's per-flight telemetry logs (mode/armed/battery/gps/etc.) -
+# grow without bound every run, not reproducible from source.
+Document/logs/
