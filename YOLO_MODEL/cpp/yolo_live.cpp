@@ -782,8 +782,8 @@ int run() {
     std::string repo_root = find_repo_root();
     std::string setting_path = repo_root + "/setting/cam_sets.yaml";
     std::string yolo_dir = repo_root + "/YOLO_MODEL";
-    std::string onnx_path = yolo_dir + "/Software_TeamB_best_256x320.onnx";
-    std::string engine_path = yolo_dir + "/Software_TeamB_best.engine";
+    std::string onnx_path = yolo_dir + "/0812best.onnx";
+    std::string engine_path = yolo_dir + "/0812best.engine";
     std::string classes_path = yolo_dir + "/classes.txt";
 
     AppPaths paths;

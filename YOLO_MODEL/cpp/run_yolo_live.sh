@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds (if needed) and runs the C++ port of ../yolo_live.py.
 # No arguments - yolo_live.cpp finds the repo root itself and reads
-# ../prototype.onnx/.engine, ../classes.txt, ../../setting/cam_sets.yaml.
+# ../0812best.onnx/.engine, ../classes.txt, ../../setting/cam_sets.yaml.
 set -eu
 cd "$(dirname "$0")"
 
