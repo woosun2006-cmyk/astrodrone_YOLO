@@ -64,8 +64,10 @@ constexpr double LIVE_WINDOW_SEC = 40;
 
 const std::string LOG_PREFIX = "yolo_log";
 
-constexpr int PORT = 8002;  // same as yolo_live.cpp - control/target_distance.cpp
-                             // doesn't care which binary is actually serving it
+// PORT falls back to this if setting/port.yaml has no "yolo_live" key -
+// control/target_distance.cpp doesn't care which binary is actually
+// serving it, just that it's this port.
+int PORT = 8002;
 
 constexpr double DEFAULT_CONF = 0.25;
 constexpr float IOU_THRES = 0.45f;
@@ -73,9 +75,12 @@ constexpr bool FP16 = false;
 
 constexpr int TARGET_CONFIRM_FRAMES = 5;
 
-constexpr int SENSOR_ID = 0;
-constexpr int WIDTH = 640, HEIGHT = 480, CAM_FPS = 30;
-constexpr int WBMODE = 3;
+// Camera capture settings - fall back to these if setting/cam_sets.yaml's
+// "yolo_live" section is missing a key. Overwritten from that section at
+// the top of run(), before grabber()/HttpServer read them.
+int SENSOR_ID = 0;
+int WIDTH = 640, HEIGHT = 480, CAM_FPS = 30;
+int WBMODE = 3;
 // ---------------------------------------------------------------------------
 
 std::atomic<bool> g_stopping{false};
@@ -559,6 +564,19 @@ int run() {
     const YamlValue& wb = cam_settings["wb_correction"];
     cv::Vec3f wb_gains_bgr(static_cast<float>(wb["blue_gain"].as_double()), static_cast<float>(wb["green_gain"].as_double()),
                            static_cast<float>(wb["red_gain"].as_double()));
+
+    const YamlValue& cam_cfg = cam_settings["yolo_live"];
+    SENSOR_ID = static_cast<int>(cam_cfg.get_long_or("sensor_id", SENSOR_ID));
+    WIDTH = static_cast<int>(cam_cfg.get_long_or("width", WIDTH));
+    HEIGHT = static_cast<int>(cam_cfg.get_long_or("height", HEIGHT));
+    CAM_FPS = static_cast<int>(cam_cfg.get_long_or("fps", CAM_FPS));
+    WBMODE = static_cast<int>(cam_cfg.get_long_or("wbmode", WBMODE));
+    // load_port_settings() assumes an executable under control/ or
+    // control/build/ (see control/yaml_settings.cpp) - this binary lives
+    // one directory deeper (YOLO_MODEL/cpp/build/), so read port.yaml via
+    // the repo_root this file already locates for cam_sets.yaml instead.
+    YamlValue port_settings = parse_yaml_file(repo_root + "/setting/port.yaml");
+    PORT = static_cast<int>(port_settings.get_long_or("yolo_live", PORT));
 
     SharedState state;
     ConfState conf_state;

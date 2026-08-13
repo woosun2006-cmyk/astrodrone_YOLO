@@ -43,3 +43,10 @@ fpslog:                  # test_cam/fpslog.py
   fixed_shutter_us: 0     # 0 = auto exposure
   wbmode: 3
   quality: 25
+
+yolo_live:                # YOLO_MODEL/cpp/yolo_live.cpp, yolo_headless.cpp
+  sensor_id: 0
+  width: 640
+  height: 480
+  fps: 30
+  wbmode: 3
