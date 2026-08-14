@@ -923,3 +923,195 @@ ApproachOutcome approach_target(..., const std::string& resume_mode = "",
 - 요격 접근은 `dist≈4m`에서 `vx` 0.4m/s까지만 관찰했다. `stop_distance`(2.0m)
   도달과 정지 거동, `intercept_approach_duration_sec`(30s) 만료 경로는 아직
   미검증.
+
+## 2026-08-14 — control/new_algorithm 신설(좌표기반 접근 알고리즘), Gazebo PC 재구축, SITL 검증
+
+### 1. 오늘 논의 정리 문서 2개 작성
+
+- **`Document/algorithm-renewer.md`**: 오전 대화(Guided 모드 PID 문제 -> 위치/속도
+  하이브리드 제어 -> ROI 기반 추적 전략) 원문 정리 + 참고 레포 2개
+  (`Kimhyuntae9665/Capstone-2025-team-32` GPS 기반, `astroquad/uav-onboard`
+  optical-flow 기반) 비교 + 그 차이에 대한 의견 섹션(내가 추가했다고 명시).
+- **`Document/algorithm.md`**: 이륙부터 최종 접근까지 전체 흐름 서술. 아래
+  2~4번 작업을 반영하며 여러 차례 갱신됨 - 최종 버전이 현재 상태.
+
+### 2. `control/new_algorithm/hybrid_guidance` 신설 - 설계가 세 번 바뀜
+
+목표: 기존 `control.cpp`/`target_distance.cpp`는 **하나도 수정하지 않고**,
+새 접근 알고리즘만 별도 실행파일로 추가. 재사용 가능한 건 전부 재사용
+(`drone_lib`, `target_link`, `pos_calculator`, `yaml_settings`).
+
+**1차 설계 (폐기)**: 거리 구간별로 위치 제어(멀리)/속도 제어(가까이)를 나누는
+하이브리드 - `far_max_forward_speed_mps` 등으로 `SET_POSITION_TARGET_LOCAL_NED`의
+위치 필드를 매 사이클 조금씩 미는 방식.
+
+**2차 설계 (현재)**: 사용자 피드백으로 전면 재설계.
+- **좌표기반 사선(대각선) 이동**: 기존 `control.cpp`의 `approach_target()`은
+  "몸을 돌리고 나서 전진"이라 사선 이동이 아님. 매 사이클 `distance_m`(빗변)과
+  `x_px`에서 변환한 `lateral_offset_m`을 **피타고라스로 분해**해서 전진/좌우
+  성분을 동시에 계산 (`forward_m = sqrt(distance_m² - lateral_m²)`).
+  `drone::send_velocity_body(vx, vy, 0, yaw_rate)`로 전송 - 새 MAVLink 코드
+  없이 기존 함수 그대로 사용.
+- **거리 구간**: `shell_radius_m`(5m) 밖은 등속 `cruise_speed_mps`(0.5m/s),
+  안쪽은 지수 감속 `v(d) = cruise_speed_mps * exp(-decel_rate_per_m *
+  (shell_radius_m - d))`, `stop_radius_m`(1m) 이하는 하드 0 (지수함수는
+  수학적으로 정확히 0에 안 닿으므로).
+- **5m 셸 재검증 게이트**: `shell_radius_m` 안쪽으로 처음 들어온 순간 제자리
+  정지, `tracking`이 `reverify_hold_sec`(1초) 연속 유지돼야 감속 접근 시작 -
+  YOLO의 5프레임 확정 스트릭(1차 게이트)과는 별개인 2차 오검출 방지 게이트.
+  (사용자가 설명한 "4분면 스캔 + 640x640 ROI 재탐지"는 Jetson 카메라/TensorRT
+  가 있어야 검증 가능해서 오늘 범위에서 제외 - `algorithm.md` 6번에 명시.)
+- **감속 곡선 상수**: "5m에서 0.5m/s, 2m에서 0.1m/s" 두 기준점으로
+  `decel_rate_per_m = ln(0.5/0.1)/(5-2) ≈ 0.536` 역산. 실측 검증 필요.
+
+**3차 설계 (오늘 중 추가 수정)**: 사용자가 시작 흐름 자체를 정정 -
+"GUIDED로 자체 이륙"이 아니라 **"AUTO로 이미 비행 중인 미션을 감시하다가
+타겟 확정되면 GUIDED로 가로채는" 구조**여야 함. `wait_for_auto_armed()`/
+`wait_for_target_lock()` 추가 - `control.cpp`의 `run_auto_intercept()`/
+`wait_for_lock()`과 같은 패턴이지만, 그 함수들이 `control.cpp` 익명
+네임스페이스의 private 함수라 링크가 안 돼서 새로 작성함 (아래 5번 참고 -
+"버그가 있어서 못 쓴다"고 처음에 잘못 적었다가 정정).
+추가로 **1m 정지 후 `stop_hover_sec`(5초) 호버링 -> `drone::land()`** 도
+반영 (`algorithm.md`의 "1m 정지 이후 동작 미정" 항목 해소).
+
+- 파일: `control/new_algorithm/{hybrid_guidance.hpp,.cpp,
+  hybrid_guidance_main.cpp, CMakeLists.txt, README.md}`,
+  `setting/hybrid_guidance.yaml`(신규 설정 파일), `scripts/run_new_algorithm.sh`.
+- `control/CMakeLists.txt`는 건드리지 않음 - `new_algorithm/`이 자체
+  `CMakeLists.txt`로 `control/`의 기존 `.cpp`들을 상대경로로 다시 컴파일해
+  독립 실행파일(`control/build_new_algorithm/hybrid_guidance`)을 만듦.
+  실행파일 위치를 repo root 기준 `control/build/`와 같은 깊이(2단계 아래)에
+  고정한 이유: `yaml_settings.cpp`의 설정파일 탐색이 실행파일 경로 기준
+  상대경로(`/proc/self/exe`)라서.
+
+### 3. `control.cpp`의 prearm 체크 허점 발견 - `hybrid_guidance`에서 수정
+
+아래 4번 SITL 검증 중 GUIDED 전환 직후 `[EMERGENCY] health breach - LOITER`가
+매번 발생하는 걸 보고 원인 추적. `SYS_STATUS`의 PREARM_CHECK 비트를 실측:
+
+```
+SYS_STATUS prearm present=False healthy=False batt=100% volt=12600mV
+GPS_RAW_INT fix_type=6 satellites=10
+```
+
+**이 SITL 빌드는 PREARM_CHECK 비트를 `present`로 아예 안 냄** (배터리/GPS는
+정상). 기존 `control.cpp`의 `evaluate_health_breach()`도 `h.have_sys_status`
+만 보고 `present` 비트는 확인 안 해서 **똑같은 허점**을 갖고 있음 - 즉
+`control.cpp`도 실기체가 이 비트를 안 낸다면 똑같이 오탐 LOITER에 걸릴 수
+있음(이번 세션에서 `control.cpp`는 고치지 않음, `hybrid_guidance`만 수정).
+
+**Before** (`hybrid_guidance_main.cpp`)
+```cpp
+health.prearm_healthy = (s.onboard_control_sensors_health & MAV_SYS_STATUS_PREARM_CHECK) != 0;
+...
+if (!h.prearm_healthy) return true;
+```
+**After** - present 비트도 같이 보고, present일 때만 판정 (배터리/GPS 미보고
+값을 안전/위험 어느 쪽으로도 안 보는 것과 같은 원칙)
+```cpp
+health.prearm_present = (s.onboard_control_sensors_present & MAV_SYS_STATUS_PREARM_CHECK) != 0;
+health.prearm_healthy = (s.onboard_control_sensors_health & MAV_SYS_STATUS_PREARM_CHECK) != 0;
+...
+if (h.prearm_present && !h.prearm_healthy) return true;
+```
+
+### 4. Gazebo 시뮬레이션 PC(`192.168.0.116`) - 근본 원인 다른 컴퓨터, 새로 구축
+
+2026-08-12 로그의 PC(Windows+WSL2, Gazebo Jetty)와 오늘 접속한 PC가 다른
+장비였음 - `astrohome@192.168.0.116`, Gazebo Sim **8.14.0 (Harmonic)**.
+`gazeboSim/README.md`가 가정하는 경로(`~/ardupilot`, `~/venv-ardupilot`,
+droneVideo 릴레이)도 이 PC엔 없어서 처음부터 다시 구축.
+
+**4-1. `ardupilot_gazebo`가 Gazebo Classic용으로 빌드돼 있었음.** 이 PC의
+`/hailo_work/astrohome-main/src/ardupilot_gazebo`(다른 프로젝트 - VTOL 비행기,
+재난구조 드론 - 가 쓰던 체크아웃, 공유 자원이라 손대지 않음)는
+`find_package(gazebo REQUIRED)`(Classic 전용) 프로젝트였음. 설치된 건
+gz-sim(Harmonic)뿐이라 `libArduPilotPlugin.so`가 `GzPluginHook` 심볼을
+export 못 해 로드 자체가 거부됨(`gz sim` 서버가 월드는 로드하지만
+FDM 포트 9002가 절대 안 열림). **해결**: 진짜 gz-sim용 원본
+(`github.com/ArduPilot/ardupilot_gazebo`)을 별도 폴더
+(`/home/astrohome/astro-drone-gzsim-plugin/`)에 새로 clone+build - 공유
+체크아웃은 전혀 안 건드림. 재빌드한 플러그인의 `iris_runway.sdf`/
+`iris_with_gimbal` 등이 `gazeboSim/README.md`가 원래 가정하던 것과 정확히
+일치 - README가 애초에 이 원본 프로젝트를 전제로 쓰여 있었던 것으로 보임.
+- 중간에 이 PC의 `ardupilot_gazebo`(구버전) 월드가 Gazebo Classic 머티리얼
+  문법(`<script><uri>file://media/...gazebo.material</uri></script>`)을
+  써서 gz-sim이 월드 로드 자체를 거부하는 별개 문제도 만남 - 원본은 안
+  건드리고 패치된 모델 사본을 `gazeboSim/models_patched/`에 만들어 우회
+  (최종적으론 진짜 원본 저장소로 넘어가면서 이 우회 자체가 불필요해짐).
+
+**4-2. Jetson -> PC 직접 연결이 방화벽에 막혀 있었음.** `gazeboSim/README.md`의
+droneVideo 릴레이 체인이 이 환경엔 안 맞음. PC의 `ufw`가 기본 deny-incoming
+(`22`/`433`/`3389`만 허용)이라 5762(SITL SERIAL1)가 막혀 있었던 것 -
+`sudo ufw allow from 192.168.0.216 to any port 5762 proto tcp`로 **이
+Jetson IP에서만** 좁게 허용해서 해결 (Anywhere로 안 열었음). ⚠️ 이 규칙은
+아직 PC에 남아있음 - 되돌릴지 결정 필요.
+- 이후 젯슨 쪽은 `gazeboSim/bridge_sitl.sh`를 그대로 쓰지 않고(하드코딩된
+  droneVideo 주소라 이 토폴로지엔 안 맞음), 같은 기법(PTY <-> TCP socat
+  릴레이)을 이 PC 주소로 직접 실행 - `bridge_sitl.sh` 자체는 안 건드림.
+
+### 5. `hybrid_guidance` 실기(SITL) 검증 - AUTO 감시 ~ DECEL까지 확인
+
+Jetson의 실제 `mavlink_proxy`/`target_distance`/`hybrid_guidance` 바이너리를
+PC의 Gazebo+SITL에 붙여서 끝까지 돌림 (PC에서 `pymavlink`로 arm+더미
+1-웨이포인트 미션 업로드+AUTO 전환).
+
+```
+[HYBRID_GUIDANCE] AUTO + armed 확인됨 - 타겟 확정 대기.
+[HYBRID_GUIDANCE] AUTO 비행 중 - 타겟 대기 (tracking=Y)
+[HYBRID_GUIDANCE] 타겟 확정 - GUIDED로 전환합니다.
+GUIDED 모드 확인됨.
+t=0.00s TRACK mode=REVERIFY dist=4.50m vx=0.00 vy=0.00 alt=4.50m armed=Y
+... (1초 유지 후)
+t=36.03s TRACK mode=DECEL dist=4.50m vx=0.38 vy=0.00 alt=4.50m armed=Y
+```
+`v(4.5) = 0.5*exp(-0.536*0.5) = 0.382` - 손으로 유도한 감속 공식과 실측
+`vx=0.38`이 정확히 일치. `AUTO 감시 -> 타겟 확정 -> GUIDED 전환 -> REVERIFY
+-> DECEL`까지 실제 SITL 텔레메트리로 검증됨(3번 항목의 prearm 버그를 여기서
+발견/수정).
+
+**미검증으로 남은 것**: `gazeboSim/fake_yolo_target.py`는 `x_px`/`y_px`가
+고정값이라, 기체가 실제로 전진해도 `distance_m`이 안 줄어듦(고도만으로
+`distance_m`이 정해지는 구조) - `sim_mission_no_camera.sh`도 같은 한계를
+README에 이미 명시해둔 부분. STOPPED 진입/5초 호버/착륙까지 보려면 Gazebo에
+타겟을 스폰하고 `gazebo_camera_target.py`(실제 카메라 인식)를 쓰는
+`--camera` 경로가 필요 - 다음 단계로 남김.
+
+추가로 이 Jetson의 `yolo_headless`가 이미 실제 서비스로 떠 있어서(8002 포트
+점유) `fake_yolo_target.py`는 8100 포트로 대신 띄우고
+`target_distance --yolo-port 8100`으로 넘김 - 실제 서비스는 안 건드림.
+
+### 6. Jetson 로컬 `numpy`가 이 ARM CPU에서 죽어있음 (세션과 무관, 안 건드림)
+
+`pymavlink`로 arm/모드 전환을 이 Jetson에서 직접 하려다 발견:
+```
+$ python3 -c "import numpy"
+Illegal instruction (core dumped)
+```
+`numpy==1.19.5`가 이 aarch64 CPU와 안 맞는 것으로 보임 - YOLO 스택이 의존할
+가능성이 있어 손대지 않고, 같은 작업을 PC의 `mavproxy` venv(`pymavlink`
+포함, 정상 동작)에서 대신 실행함.
+
+### 7. ⚠️ 문서 stale 발견 - `control/README.md`/`gazeboSim/README.md`
+
+2번 항목에서 "`run_auto_intercept()`에 `HealthState` 버그가 있어서 못 쓴다"고
+적었다가, 실제로는 **2026-08-12(2)에 이미 고쳐졌다는 걸 뒤늦게 확인**
+(현재 `control.cpp` 923-924줄도 고친 패턴 그대로). `control/README.md`/
+`gazeboSim/README.md`의 "Known blocker" 섹션이 그 수정 이후로 갱신이 안 돼서
+생긴 착오 - 오늘 작성한 문서(`algorithm.md`, `control/new_algorithm/README.md`)
+에서는 정정했지만, **두 README 자체는 이번 세션에서 안 고침** - 다음에 정리
+필요.
+
+### ⚠️ 실비행 전 확인할 것 (추가분, 2026-08-14)
+
+- `control/README.md`/`gazeboSim/README.md`의 "Known blocker"(HealthState
+  race) 섹션이 stale함 - 2026-08-12(2)에 고쳐진 걸 반영해서 갱신 필요.
+- PC(`192.168.0.116`)의 `ufw` 규칙(이 Jetson IP에서 5762 허용)이 아직 남아
+  있음 - 계속 열어둘지 결정.
+- `decel_rate_per_m`(0.536)은 "5m/0.5m/s, 2m/0.1m/s" 두 점만으로 역산한 값 -
+  실측 재조정 필요.
+- `hybrid_guidance`의 STOPPED -> 5초 호버 -> 착륙 경로는 정적 fake 타겟
+  한계로 아직 실행 검증 못함 - `--camera` 모드로 후속 검증 필요.
+- `hybrid_guidance`가 수정한 prearm `present` 비트 체크를 `control.cpp`
+  에도 동일하게 반영할지 결정 필요 (지금은 `control.cpp`엔 미반영, 같은
+  허점이 남아있음).

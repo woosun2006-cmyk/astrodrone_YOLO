@@ -46,7 +46,7 @@
 타겟이 잡히면, 다음과 같은 방식으로 정밀도를 높일 계획이다:
 
 1. 1280x720 전체 프레임을 4분면으로 나눠, 대상이 어느 분면에 있는지 파악한다.
-2. 그 분면 기준으로 680x680 크기의 ROI를 잘라낸다.
+2. 그 분면 기준으로 640x640 크기의 ROI를 잘라낸다.
 3. **ROI 안에서 YOLO를 다시 돌려** 그 대상이 맞는지 재확인한다 (낚시하듯 좁혀 들어가는 방식 — 오검출 방지 1차 관문).
 4. ROI의 중심 좌표를 화면(카메라) 중심과 비교해서, 그 방향으로 이동한다.
 
@@ -85,11 +85,14 @@
 `control/new_algorithm/hybrid_guidance`가 담당한다. 흐름은 다음과 같다.
 
 ```
-[시작] GUIDED 전환 → arm → 이륙(설정된 고도까지)
+[시작] AUTO 모드로 이미 이륙해서 미션 비행 중 (arm/이륙은 이 프로그램이 하지 않음)
    │
    ▼
-[SEARCH] 타겟 confirmed 대기 (정지 상태로 호버링)
-   │  confirmed=true 확인되면
+[SEARCH] AUTO 비행을 감시하며 타겟 confirmed 대기 (아직 아무 명령도 안 보냄)
+   │  tracking이 1초(search_confirm_hold_sec) 연속 유지되면
+   ▼
+[GUIDED 전환] drone::set_mode("GUIDED")
+   │
    ▼
 [CRUISE] 등속 0.5 m/s로 타겟을 향해 사선(대각선) 이동
    │  distance_m ≤ 5m (shell_radius_m) 진입
@@ -101,15 +104,26 @@
    │  distance_m ≤ 1m (stop_radius_m)
    ▼
 [STOPPED] 속도 0으로 하드 정지, 제자리 호버링
+   │  5초(stop_hover_sec) 유지되면
+   ▼
+[LAND] 착륙
 ```
 
 각 단계를 구체적으로 설명한다.
 
-### 3-1. 이륙까지
+### 3-1. 시작 — AUTO 비행 감시 (이 프로그램은 arm/이륙을 하지 않음)
 
-기존 `control.cpp`의 자체 실행 흐름(`main()`의 기본 경로 — `--auto-intercept`가 아닌 쪽)과 같은 패턴: `drone::set_mode("GUIDED")` → 모드 전환 확인(heartbeat 폴링) → `drone::arm_disarm(true)` → arm 확인 → `drone::takeoff(고도)`. 전부 기존 `drone_lib.hpp`의 함수를 그대로 호출한다.
+**정정**: 처음엔 이 프로그램이 스스로 GUIDED로 전환해서 arm하고 이륙하는 방식으로 짰었는데, 틀렸다. 실제로는:
 
-`control.cpp`의 `run_auto_intercept()`/`wait_for_lock()` 경로는 쓰지 않는다 — `control/README.md`, `gazeboSim/README.md`에 기록된 `HealthState` 초기화 버그(매 루프 새 `HealthState`를 만들어서 `wait_for_lock()`이 armed 상태를 못 보고 즉시 빠져나가는 문제)가 있는 경로라, 아예 그 경로에 의존하지 않는 방식으로 짰다.
+- 드론은 **AUTO 모드로 이미 이륙해서 미션을 날고 있는 상태**로 시작한다 (웨이포인트 등, 외부에서 업로드된 미션 — 이 프로그램은 그 미션을 만들지도, arm/이륙을 하지도 않는다).
+- 이 프로그램은 그 AUTO 비행을 **지켜보기만** 하다가, 타겟이 확정되는 순간 GUIDED로 가로채서 접근을 시작한다.
+
+이건 기존 `control.cpp`의 `run_auto_intercept()`/`wait_for_lock()`과 같은 모양이다. **정정**: 처음엔 "그 경로에 `HealthState`를 매 루프 새로 만드는 버그가 있어서 못 가져다 쓴다"고 적었는데, 확인해보니 그 버그는 **2026-08-12에 `control.cpp`에서 이미 고쳐져 있었다** (`Document/developinglogMJ.md` 2026-08-12(2) 1번 항목) — `control/README.md`/`gazeboSim/README.md`의 "Known blocker" 섹션이 그 수정 이전 내용 그대로 남아있어서 생긴 착오였다. 실제로 못 가져다 쓴 이유는 버그가 아니라 **구조적인 문제**: `wait_for_auto_armed()`/`wait_for_lock()`이 `control.cpp`의 익명 네임스페이스 안에 있는 private 함수라 다른 실행파일(`hybrid_guidance`)에서 링크할 수 없다. 그래서 같은 목적의 함수를 새로 작성했고, `control.cpp`가 이미 쓰고 있는 것과 같은 패턴(health 상태를 프로그램 시작부터 끝까지 단 하나의 변수로만 유지)을 그대로 따랐다.
+
+흐름:
+1. `wait_for_auto_armed()`: armed && AUTO 모드가 될 때까지 HEARTBEAT를 계속 지켜본다.
+2. `wait_for_target_lock()`: AUTO/armed가 유지되는 동안 `tracking`이 `search_confirm_hold_sec`(1초) 연속 유지되는지 확인한다. 중간에 조종사가 모드를 바꾸거나 disarm하면 즉시 1번으로 돌아간다.
+3. 확정되면 `drone::set_mode("GUIDED")`로 전환하고, 아래 CRUISE부터 시작한다.
 
 ### 3-2. CRUISE — 좌표 기반 사선 이동 (5m 밖)
 
@@ -149,9 +163,11 @@ v(d) = cruise_speed_mps × exp(−k × (shell_radius_m − d))
 - 이 곡선의 모양은 **"멀리서는 거의 등속을 유지하다가, 목표 근처(마지막 1~2m)에서 속력이 훅 빠르게 떨어지는"** 형태다. 5m→2m 사이에 이미 0.5→0.1로 대부분 감속이 끝나 있고, 2m→1m 구간엔 (0.1 × 0.536 ≈) 0.06m/s 정도밖에 안 남는다.
 - 방향 성분(forward/lateral)은 CRUISE와 똑같이 피타고라스 분해로 매 사이클 다시 계산한다 — 속력 크기만 이 지수함수로 바뀔 뿐, 사선 이동 방식 자체는 동일하다.
 
-### 3-5. STOPPED — 1m 하드 정지
+### 3-5. STOPPED — 1m 하드 정지 → 5초 호버링 → 착륙
 
 지수함수는 수학적으로 정확히 0에 도달하지 않고 한없이 가까워지기만 한다. 그래서 `distance_m ≤ stop_radius_m`(1m)이 되는 순간 위 수식과 상관없이 **속력을 무조건 0으로 못박는다**. 이게 실제로 기체를 멈추게 하는 지점이다.
+
+정지한 채로 `stop_hover_sec`(기본 5초) 동안 유지되면 `drone::land()`를 호출해 착륙한다. 중간에 기체가 `stop_radius_m` 밖으로 다시 밀려나면(모드가 STOPPED에서 벗어나면) 5초 타이머는 리셋된다 — "정지 상태가 5초간 안정적으로 유지됐을 때"만 착륙하도록.
 
 ---
 
@@ -171,12 +187,12 @@ v(d) = cruise_speed_mps × exp(−k × (shell_radius_m − d))
 | 구성 요소 | 상태 |
 |---|---|
 | YOLO 5프레임 확정 스트릭 (1차 오검출 게이트) | 기존 구현, 재사용 |
-| YOLO 4분면 스캔 + 680x680 ROI 재탐지 | **미구현 — Jetson 카메라 필요, 향후 별도 작업** |
+| YOLO 4분면 스캔 + 640x640 ROI 재탐지 | **미구현 — Jetson 카메라 필요, 향후 별도 작업** |
 | 픽셀→미터 변환, 피타고라스 거리 계산 | 기존 구현(`pos_calculator.cpp`, `target_distance.cpp`), 재사용 |
-| GUIDED 전환/arm/이륙 | 기존 `drone_lib.hpp` 함수 재사용 |
+| AUTO 비행 감시 → 타겟 확정 → GUIDED 가로채기 | **신규(같은 패턴 재작성) — `hybrid_guidance_main.cpp`의 `wait_for_auto_armed`/`wait_for_target_lock`** |
 | 좌표기반 사선 이동 (피타고라스 분해) | **신규 — `control/new_algorithm/hybrid_guidance.cpp`** |
 | 5m 셸 재검증 게이트 (2차 오검출 게이트) | **신규 — 위와 동일 파일** |
-| 5m~1m 지수 감속, 1m 하드 정지 | **신규 — 위와 동일 파일** |
+| 5m~1m 지수 감속, 1m 하드 정지, 5초 호버링 후 착륙 | **신규 — 위와 동일 파일 + `hybrid_guidance_main.cpp`** |
 | 고도제한/배터리/GPS/heartbeat/타겟로스트 안전 감시 | 기존 로직과 같은 형태로 재구현 (`hybrid_guidance_main.cpp`) |
 
 설정값은 `setting/hybrid_guidance.yaml`(신규 파일)에 모아뒀고, 기존 `setting/MAVLink.yaml`/`safety.yaml`/`port.yaml`은 읽기만 하고 전혀 수정하지 않았다.
@@ -186,5 +202,4 @@ v(d) = cruise_speed_mps × exp(−k × (shell_radius_m − d))
 ## 6. 남은 미확정/미구현 항목
 
 - **YOLO ROI 크롭(1단계 확장)**: Jetson 실기 카메라·TensorRT 파이프라인에서 별도로 구현·검증 필요.
-- **1m 정지 이후 동작**: 현재는 그 자리에서 계속 호버링만 한다. 착륙할지, 다음 임무로 넘어갈지는 아직 정의 안 됨.
 - **감속 곡선 상수(`decel_rate_per_m`)**: 5m/0.5m/s, 2m/0.1m/s 두 기준점으로만 역산한 값이라, 실비행/시뮬레이션에서 실제 느낌을 보고 재조정 필요.

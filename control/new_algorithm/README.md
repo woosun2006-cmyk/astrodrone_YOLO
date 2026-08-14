@@ -23,11 +23,19 @@ is used as-is:
 | `setting/MAVLink.yaml` / `safety.yaml` / `port.yaml` (read only, via `drone::load_*_settings()`) | |
 
 `control.cpp` itself is not reused/called - it is a full alternative binary,
-not something this links against. This program self-launches (GUIDED -> arm
--> takeoff -> approach loop) the same way `control.cpp`'s default flow does;
-it does **not** use `control.cpp`'s `run_auto_intercept()`/`wait_for_lock()`
-path, so it is unaffected by (and does not fix) the `HealthState` race
-`control/README.md` and `gazeboSim/README.md` document there.
+not something this links against. This program does not arm or take off
+itself: like `control.cpp`'s `run_auto_intercept()`, it watches an
+already-armed, already-flying AUTO mission and takes over into GUIDED once
+a target locks on. It re-implements that watch loop (`wait_for_auto_armed`/
+`wait_for_target_lock`) rather than calling `control.cpp`'s versions,
+because those are private functions in `control.cpp`'s anonymous namespace
+and can't be linked from a separate binary - not because of a bug. (An
+earlier revision of this file claimed those functions still had the
+`HealthState` race `control/README.md`/`gazeboSim/README.md`'s "Known
+blocker" section describes; that was already fixed in `control.cpp` on
+2026-08-12 - see `Document/developinglogMJ.md` - the READMEs just hadn't
+been updated to say so. This program's re-implementation follows the same
+already-fixed pattern: `health` is declared once and never recreated.)
 
 **Do not run this alongside `control`** - both bind `target_track.udp_port`
 (15020) as a `TargetRangeReceiver`, and only one process can receive that
@@ -69,7 +77,7 @@ inward, `max_yaw_rate`/`k_yaw_px` keep the target centered throughout.
 ## Known limitation
 
 Adaptive ROI cropping / re-detection cadence (`Document/algorithm-renewer.md`
-sections 12-13, and the quadrant-scan + 680x680 crop design discussed
+sections 12-13, and the quadrant-scan + 640x640 crop design discussed
 2026-08-14) is **not implemented here** - that is perception work
 (`YOLO_MODEL/`), needs the real Jetson camera/TensorRT pipeline to validate,
 and is out of scope for this control-layer folder. This guidance layer only

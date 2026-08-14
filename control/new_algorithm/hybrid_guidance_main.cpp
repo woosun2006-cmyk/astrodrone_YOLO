@@ -1,14 +1,26 @@
 // Entry point for the coordinate-based approach guidance law
 // (Document/algorithm-renewer.md section 20, 2026-08-14 revision -
 // constant-speed cruise to a 5m shell, re-verify hold, exponential decel to
-// a 1m hard stop). Self-launches like
-// control.cpp's default (non-auto-intercept) flow: sets GUIDED, arms,
-// takes off, then runs its own approach loop - it does not reuse
-// control.cpp's run_auto_intercept()/wait_for_lock() path (control/README.md
-// documents a HealthState race in there that this program sidesteps simply
-// by not depending on it), so it should be launched instead of `control`,
-// not alongside it - both would fight over the same target_track.udp_port
-// receiver socket.
+// a 1m hard stop). Does NOT arm or take off itself: the vehicle is expected
+// to already be armed and flying its own externally-uploaded AUTO mission
+// (waypoints, takeoff included) by the time this program is launched. This
+// program watches that AUTO flight until a target locks on, then switches
+// to GUIDED and takes over - same shape as control.cpp's
+// run_auto_intercept()/wait_for_lock(), re-implemented here (not linked
+// against control.cpp) because those are private functions in
+// control.cpp's anonymous namespace. control/README.md and
+// gazeboSim/README.md's "Known blocker" section describes a HealthState
+// race in that path (a fresh HealthState created on every outer-loop pass,
+// so wait_for_lock() checks health.have_armed before a HEARTBEAT has had a
+// chance to arrive and bails out instantly) - that was already fixed in
+// control.cpp on 2026-08-12 (Document/developinglogMJ.md), the READMEs
+// just weren't updated to say so. This re-implementation follows the same
+// already-fixed pattern: `health` below is declared once and never
+// recreated, so it always reflects whatever HEARTBEATs have actually been
+// seen so far.
+//
+// Should be launched instead of `control`, not alongside it - both would
+// fight over the same target_track.udp_port receiver socket.
 //
 // Everything below either calls into control/'s unmodified public headers
 // (drone_lib.hpp, target_link.hpp, yaml_settings.hpp) or hybrid_guidance.hpp
@@ -83,19 +95,6 @@ void wait_for_mode(MavConnection& vehicle, const std::string& mode, double timeo
     throw std::runtime_error(mode + " 전환 확인 실패 (" + std::to_string(timeout_sec) + "초 초과)");
 }
 
-void wait_for_armed(MavConnection& vehicle, double timeout_sec) {
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double>(timeout_sec);
-    while (std::chrono::steady_clock::now() < deadline) {
-        mavlink_message_t msg;
-        if (vehicle.recv_match({MAVLINK_MSG_ID_HEARTBEAT}, msg, 0.2)) {
-            mavlink_heartbeat_t hb;
-            mavlink_msg_heartbeat_decode(&msg, &hb);
-            if (is_armed_from_heartbeat(hb)) return;
-        }
-    }
-    throw std::runtime_error("시동(arm) 확인 실패 (" + std::to_string(timeout_sec) + "초 초과)");
-}
-
 // Compact stand-in for control.cpp's HealthState/evaluate_health_breach -
 // same fields, same thresholds (both read from the unmodified
 // setting/safety.yaml), just without the CSV flight logger, since that's
@@ -106,6 +105,16 @@ struct HealthSnapshot {
     double battery_voltage_v = -1;
     uint8_t fix_type = 0;
     uint8_t satellites = 255;
+    // present/healthy mirror MAVLink's own two-bit convention
+    // (onboard_control_sensors_present/_health): a sensor bit that isn't
+    // present can't be assumed healthy *or* unhealthy - same "can't be
+    // assumed safe or unsafe" rule this codebase already applies to an
+    // unreported battery_percent/voltage (see target_distance.cpp/
+    // control.cpp). Verified against this Gazebo/SITL setup: its
+    // SYS_STATUS never sets PREARM_CHECK's present bit at all, so treating
+    // health=0 there as "unhealthy" was a false LOITER trip - present=false
+    // now short-circuits it instead.
+    bool prearm_present = false;
     bool prearm_healthy = true;
     uint8_t system_status = MAV_STATE_STANDBY;
     bool armed = false;
@@ -119,6 +128,7 @@ void apply_health(const mavlink_message_t& msg, HealthSnapshot& health,
             mavlink_msg_sys_status_decode(&msg, &s);
             health.battery_percent = s.battery_remaining;
             health.battery_voltage_v = s.voltage_battery == 65535 ? -1 : s.voltage_battery / 1000.0;
+            health.prearm_present = (s.onboard_control_sensors_present & MAV_SYS_STATUS_PREARM_CHECK) != 0;
             health.prearm_healthy = (s.onboard_control_sensors_health & MAV_SYS_STATUS_PREARM_CHECK) != 0;
             break;
         }
@@ -142,6 +152,100 @@ void apply_health(const mavlink_message_t& msg, HealthSnapshot& health,
     }
 }
 
+// Blocks until the vehicle is armed and in AUTO mode - flying its own
+// mission, uploaded separately, never something this program commands.
+// Keeps updating the SAME `health` the caller passes in (never a fresh one
+// per call), so health.armed/health.last_heartbeat stay valid once this
+// returns - the structural fix for the HealthState race documented in
+// control/README.md's wait_for_lock()/run_auto_intercept(). No overall
+// timeout: this is meant to be started once and left running, patiently
+// waiting for the operator to switch into AUTO. A heartbeat gap past
+// max_heartbeat_gap_sec still throws - if the link itself is gone, waiting
+// silently forever would just hide that.
+void wait_for_auto_armed(MavConnection& vehicle, HealthSnapshot& health, double max_heartbeat_gap_sec) {
+    uint32_t auto_mode = copter_mode_mapping().at("AUTO");
+    auto last_status_print = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+    uint32_t custom_mode = 0;
+    while (true) {
+        auto now = std::chrono::steady_clock::now();
+        double gap = std::chrono::duration<double>(now - health.last_heartbeat).count();
+        if (gap > max_heartbeat_gap_sec) {
+            throw std::runtime_error("AUTO 대기 중: heartbeat " + std::to_string(max_heartbeat_gap_sec) +
+                                      "초 이상 끊김 - 픽스호크 응답 없음");
+        }
+        mavlink_message_t msg;
+        if (vehicle.recv_match({MAVLINK_MSG_ID_HEARTBEAT}, msg, 0.5) && msg.sysid == vehicle.target_system()) {
+            mavlink_heartbeat_t hb;
+            mavlink_msg_heartbeat_decode(&msg, &hb);
+            custom_mode = hb.custom_mode;
+            apply_health(msg, health, now);
+            if (health.armed && custom_mode == auto_mode) return;
+        }
+        if (std::chrono::duration<double>(now - last_status_print).count() >= 5.0) {
+            std::cout << "[HYBRID_GUIDANCE] AUTO 전환/arm 대기 중..." << std::endl;
+            last_status_print = now;
+        }
+    }
+}
+
+// Polls target_distance.cpp's UDP link while AUTO still has control,
+// waiting for a target lock solid enough to justify taking over:
+// confirm_hold_sec of continuous tracking while the vehicle is still armed
+// and in AUTO. Returns false - without sending any command - if AUTO/armed
+// drops out from under us first (operator switched modes, disarmed,
+// landed, ...) or the heartbeat goes stale; the caller goes back to
+// wait_for_auto_armed() either way.
+bool wait_for_target_lock(MavConnection& vehicle, TargetRangeReceiver& receiver, HealthSnapshot& health,
+                           double max_heartbeat_gap_sec, double link_stale_ms, double confirm_hold_sec) {
+    uint32_t auto_mode = copter_mode_mapping().at("AUTO");
+    auto last_valid = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+    TargetRangeMsg last{};
+    bool locking = false;
+    auto lock_since = std::chrono::steady_clock::now();
+    auto last_status_print = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+    uint32_t custom_mode = auto_mode;
+
+    while (true) {
+        auto now = std::chrono::steady_clock::now();
+
+        TargetRangeMsg msg;
+        if (receiver.poll(msg)) {
+            last = msg;
+            last_valid = now;
+        }
+        double link_age_ms = std::chrono::duration<double, std::milli>(now - last_valid).count();
+        bool tracking = link_age_ms <= link_stale_ms && last.valid && last.found;
+
+        mavlink_message_t hmsg;
+        if (vehicle.recv_match({MAVLINK_MSG_ID_HEARTBEAT}, hmsg, 0.1) && hmsg.sysid == vehicle.target_system()) {
+            mavlink_heartbeat_t hb;
+            mavlink_msg_heartbeat_decode(&hmsg, &hb);
+            custom_mode = hb.custom_mode;
+            apply_health(hmsg, health, now);
+        }
+
+        double heartbeat_gap = std::chrono::duration<double>(now - health.last_heartbeat).count();
+        if (heartbeat_gap > max_heartbeat_gap_sec) return false;
+        if (!health.armed || custom_mode != auto_mode) return false;
+
+        if (tracking) {
+            if (!locking) {
+                locking = true;
+                lock_since = now;
+            }
+            if (std::chrono::duration<double>(now - lock_since).count() >= confirm_hold_sec) return true;
+        } else {
+            locking = false;
+        }
+
+        if (std::chrono::duration<double>(now - last_status_print).count() >= 5.0) {
+            std::cout << "[HYBRID_GUIDANCE] AUTO 비행 중 - 타겟 대기 (tracking=" << (tracking ? "Y" : "N") << ")"
+                      << std::endl;
+            last_status_print = now;
+        }
+    }
+}
+
 bool health_breach(const HealthSnapshot& h, const YamlValue& safety) {
     long min_battery_percent = safety["battery_limit"].get_long_or("min_percent", 20);
     double min_battery_voltage_v = safety["battery_limit"].get_double_or("min_voltage_v", 14.0);
@@ -151,7 +255,7 @@ bool health_breach(const HealthSnapshot& h, const YamlValue& safety) {
     if (h.battery_percent >= 0 && h.battery_percent < min_battery_percent) return true;
     if (h.battery_voltage_v >= 0 && h.battery_voltage_v < min_battery_voltage_v) return true;
     if (h.satellites != 255 && (h.fix_type < min_fix_type || h.satellites < min_satellites)) return true;
-    if (!h.prearm_healthy) return true;
+    if (h.prearm_present && !h.prearm_healthy) return true;
     if (h.system_status == MAV_STATE_CRITICAL || h.system_status == MAV_STATE_EMERGENCY) return true;
     return false;
 }
@@ -190,7 +294,8 @@ int main() {
         // already uses to build the TargetRangeMsg this program consumes.
         cfg.focal_length_px = track.get_double_or("pixel_focal_length_px", cfg.focal_length_px);
 
-        double takeoff_altitude_m = hg.get_double_or("takeoff_altitude_m", 4.5);
+        double search_confirm_hold_sec = hg.get_double_or("search_confirm_hold_sec", 1.0);
+        double stop_hover_sec = hg.get_double_or("stop_hover_sec", 5.0);
         double approach_duration_sec = hg.get_double_or("approach_duration_sec", 60.0);
         double control_cycle_ms = hg.get_double_or("control_cycle_ms", 50.0);
         double link_stale_ms = hg.get_double_or("link_stale_ms", track.get_double_or("link_stale_ms", 500.0));
@@ -214,27 +319,43 @@ int main() {
         request_message_interval(vehicle, MAVLINK_MSG_ID_SYS_STATUS, poll_rate_hz);
         request_message_interval(vehicle, MAVLINK_MSG_ID_GPS_RAW_INT, poll_rate_hz);
 
-        if (!drone::set_mode("GUIDED")) throw std::runtime_error("GUIDED 모드 전환 명령 전송 실패");
-        wait_for_mode(vehicle, "GUIDED", 5.0);
-        std::cout << "GUIDED 모드 확인됨." << std::endl;
-
-        drone::arm_disarm(true);
-        wait_for_armed(vehicle, 5.0);
-        std::cout << "시동 완료 확인됨." << std::endl;
-
-        drone::takeoff(takeoff_altitude_m);
-        std::this_thread::sleep_for(std::chrono::duration<double>(10.0));
-
         int udp_port = static_cast<int>(track.get_long_or("udp_port", 15020));
         TargetRangeReceiver receiver(udp_port);
         std::cout << "하이브리드 가이던스 시작 (UDP " << udp_port << ", 주기 " << control_cycle_ms
                   << "ms, shell=" << cfg.shell_radius_m << "m, stop=" << cfg.stop_radius_m << "m)"
                   << std::endl;
 
+        // health is declared exactly once, here, and every wait/loop below
+        // updates this same instance (never a fresh one per iteration) -
+        // see the top-of-file comment on why that matters.
         HealthSnapshot health;
+        health.last_heartbeat = std::chrono::steady_clock::now();  // drone::connect() already saw one to get here
+
+        // Sit and watch until the vehicle is armed and flying its own AUTO
+        // mission, then wait for a target lock solid enough to take over.
+        // If AUTO/armed drops out before a lock happens (operator switched
+        // modes, disarmed, ...), go back to watching rather than treating
+        // it as fatal - the operator is still flying, just not ready for a
+        // handoff yet.
+        while (true) {
+            wait_for_auto_armed(vehicle, health, land_gap_sec);
+            std::cout << "[HYBRID_GUIDANCE] AUTO + armed 확인됨 - 타겟 확정 대기." << std::endl;
+            if (wait_for_target_lock(vehicle, receiver, health, land_gap_sec, link_stale_ms,
+                                      search_confirm_hold_sec)) {
+                break;
+            }
+            std::cout << "[HYBRID_GUIDANCE] AUTO/armed 상태 이탈 - 대기 상태로 복귀." << std::endl;
+        }
+
+        std::cout << "[HYBRID_GUIDANCE] 타겟 확정 - GUIDED로 전환합니다." << std::endl;
+        if (!drone::set_mode("GUIDED")) throw std::runtime_error("GUIDED 모드 전환 명령 전송 실패");
+        wait_for_mode(vehicle, "GUIDED", 5.0);
+        std::cout << "GUIDED 모드 확인됨." << std::endl;
+
         auto start = std::chrono::steady_clock::now();
-        health.last_heartbeat = start;
         GuidanceState guidance_state;
+        bool stopped_timer_running = false;
+        auto stopped_since = start;
         bool in_loiter = false;
         auto loiter_since = start;
         auto last_valid = start - std::chrono::seconds(10);
@@ -347,6 +468,28 @@ int main() {
                           << (tracking ? "TRACK" : "LOST ") << " mode=" << mode_name(cmd.mode)
                           << " dist=" << last.distance_m << "m vx=" << cmd.vx << " vy=" << cmd.vy
                           << " alt=" << alt << "m armed=" << (health.armed ? "Y" : "N") << std::endl;
+
+                // Document/algorithm.md's "1m 하드정지 이후 동작" open item:
+                // hover at the stop point for stop_hover_sec, then land. The
+                // timer only runs while still in kStopped - if the vehicle
+                // drifts back out past stop_radius_m (mode changes), the
+                // hover-then-land countdown resets rather than landing from
+                // wherever it happened to be.
+                if (cmd.mode == GuidanceMode::kStopped) {
+                    if (!stopped_timer_running) {
+                        stopped_timer_running = true;
+                        stopped_since = cycle_start;
+                    }
+                    double stopped_held = std::chrono::duration<double>(cycle_start - stopped_since).count();
+                    if (stopped_held >= stop_hover_sec) {
+                        std::cout << "[HYBRID_GUIDANCE] 1m 정지 " << stop_hover_sec << "초 호버링 완료 - 착륙."
+                                  << std::endl;
+                        drone::land();
+                        return 0;
+                    }
+                } else {
+                    stopped_timer_running = false;
+                }
             }
 
             std::this_thread::sleep_until(next_tick);

@@ -32,7 +32,17 @@ reverify_hold_sec: 1.0    # continuous tracking required after crossing shell_ra
 max_yaw_rate: 0.6
 k_yaw_px: 0.006
 
-takeoff_altitude_m: 4.5
+# This program does not arm or take off itself - the vehicle is expected to
+# already be armed and flying its own externally-uploaded AUTO mission.
+# search_confirm_hold_sec is how long `tracking` must hold continuously
+# while still AUTO+armed before this program takes over into GUIDED
+# (mirrors MAVLink.yaml's target_track.lock_confirm_sec, used the same way
+# by control.cpp's run_auto_intercept()).
+search_confirm_hold_sec: 1.0
+
+# After the hard stop at stop_radius_m, hover in place this long before
+# landing (Document/algorithm.md's "1m 정지 이후 동작").
+stop_hover_sec: 5.0
 
 control_cycle_ms: 50
 link_stale_ms: 500
