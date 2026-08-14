@@ -1,0 +1,71 @@
+# astro-drone 정리 대상 목록 (조사일: 2026-08-14)
+
+아무것도 삭제하지 않은 상태의 조사 결과. 실행 전 팀 확인 필요.
+
+---
+
+## 1순위 — git에 잘못 커밋된 빌드 산출물
+
+`.gitignore`에 `build/`가 없어서 빌드 결과물이 통째로 커밋됨.
+빌드할 때마다 git status에 "modified"로 뜨는 노이즈의 원인.
+
+| 경로 | 트래킹 파일 수 | 비고 |
+|---|---|---|
+| `gcs/build/` | 49개 | 바이너리 `telem_sender`(1.8M), `libgcs_fec.a`(892K), `.o` 파일들, CMake 캐시 |
+| `YOLO_MODEL/cpp/build/` | 35개 | 바이너리 `yolo_live`(5M), `yolo_live.cpp.o`(4.5M), `trt_engine.cpp.o`(1.9M) 등 |
+
+- `control/build`, `control/build_new_algorithm`, `control/new_algorithm/build`, `health-check/build`는 트래킹 안 됨 → 애초에 실수로 add된 것으로 보임.
+- `YOLO_MODEL/cpp/build/`도 `yolo_live` 관련 파일만 커밋돼 있고, 나중에 추가된 `yolo_headless` 쪽은 untracked → 한 번 실수로 add한 뒤 방치된 정황.
+
+**조치안:**
+```bash
+git rm -r --cached gcs/build YOLO_MODEL/cpp/build
+echo "build/" >> .gitignore
+```
+
+---
+
+## 2순위 — 로컬 전용 빌드 산출물 (git엔 없음, 디스크만 차지)
+
+재생성 가능 → 아무 때나 삭제 가능.
+
+- `control/build` — 19M
+- `health-check/build` — 17M
+- `control/new_algorithm/build` — 4.3M
+- `control/build_new_algorithm` — 1.6M
+- `__pycache__` 4곳: `control/`, `YOLO_MODEL/`, `jetson_power_test/`, `test_cam/`
+- 루트 `.agents/`, `.codex/` — 완전 빈 디렉터리, 용도 불명
+
+---
+
+## 3순위 — 구조적 중복 / 대용량 파일 (리팩터 성격, 신중히)
+
+| 항목 | 내용 |
+|---|---|
+| `control/third_party/mavlink` vs `health-check/third_party/mavlink` | 바이트 단위로 완전히 동일한 7.0M vendored mavlink 헤더가 두 벌 (총 14M 낭비) |
+| `mav_transport.cpp/hpp`, `yaml_settings.cpp/hpp` | `control/`와 `health-check/`에 완전히 동일한 내용으로 중복 |
+| `YOLO_MODEL/0812best.engine` (14M) | TensorRT 엔진은 GPU/TensorRT 버전에 종속 → 다른 기기에서 재사용 불가, git에 있을 필요 없는 산출물 |
+| `YOLO_MODEL/0812best.onnx` (7.2M), `best.pt` (4.2M) | export로 재생성 가능 |
+
+→ 공유 라이브러리로 third_party/공통 코드를 분리하면 중복 해소 가능 (파일 삭제보다 리팩터 작업).
+
+---
+
+## 4순위 — 잡동사니 / 잔재 파일
+
+- `jetson_power_test/logs/*.csv, *.log` (6개) — **git에 트래킹돼 있음**. `Document/logs/`는 같은 이유(재생산 불가한 비행 로그)로 이미 gitignore 처리됐는데 여긴 누락 → 일관성 없음.
+- `YOLO_MODEL/export_256x320.log` — untracked 잔재 로그.
+- `Document/logs/gazeboSim(08150415)` — 확장자 없음, 내용은 빌드 로그 터미널 캡처본. 텔레메트리 CSV 아님.
+- `Document/logs/gazeboSim_log(08150320)` — 위와 동일 성격.
+- `Document/logs/*.csv` (126개, 7.6M, 전부 8/12 비행 데이터) — gitignore로 의도적으로 제외된 실제 데이터라 "불필요"는 아님. 디스크 정리 원하면 오래된 것부터 아카이빙 검토.
+
+---
+
+## 요약
+
+| 그룹 | 액션 | 위험도 |
+|---|---|---|
+| 1. git 트래킹된 build/ | `git rm --cached` + gitignore 추가 | 낮음 (재생성 가능) |
+| 2. 로컬 build/, __pycache__, 빈 디렉터리 | `rm -rf` | 낮음 (재생성 가능) |
+| 3. third_party 중복, 모델 바이너리 | 리팩터 or git-lfs 검토 | 중간 (설계 변경 수반) |
+| 4. 잔재 로그 파일 | 삭제 | 낮음 (재생산 불가하지만 쓸모 없는 파일들) |
