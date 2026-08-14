@@ -23,3 +23,27 @@ mavlink_motor_test: 14553  # control/motor_test.cpp - ground motor test, manual 
 # (Jetson -> laptop GCS). Different range from the HTTP/MAVLink ports above
 # so nothing collides.
 gcs_telem: 15550
+
+# Gazebo/SITL simulation hosts (gazeboSim/) - which TCP port on the PC this
+# Jetson bridges to for ArduPilot SITL's SERIAL1 (bridge_sitl.sh / the
+# manual socat PTY bridge used on 2026-08-14, see
+# Document/developinglogMJ.md). Recorded per-host because SITL's own
+# SERIAL1 always binds 5762 (and SERIAL2 binds 5763) on whichever PC runs
+# it, so "5762" alone is ambiguous once more than one simulation PC is in
+# play - gazeboSim/README.md's droneVideo-relay path already assumed one
+# specific PC (WSL2, Gazebo Jetty) using 5762; this is a second, different
+# PC, so it gets its own distinct number here instead of reusing 5762.
+sim_hosts:
+  # 2026-08-12 sessions: WSL2 PC via droneVideo relay (gazeboSim/README.md).
+  # SITL's own SERIAL1, unchanged - not renumbered here, only documented so
+  # the entry below doesn't look accidental.
+  wsl_droneVideo_relay: 5762
+  # 2026-08-14: astrohome@192.168.0.116, connected directly from this
+  # Jetson (firewall rule added on that PC, see developinglogMJ.md) - no
+  # droneVideo relay needed. Not 5762 (would collide with the entry above
+  # in our own records) or 5763 (already SITL's own SERIAL2 on that PC,
+  # confirmed 2026-08-14: "bind port 5763 for SERIAL2" in its ArduCopter
+  # log) - 5764 is free. Nothing currently listens on 5764; this is a
+  # reservation for when that PC's SITL is brought back up, not a live
+  # connection right now.
+  astrohome_192_168_0_116: 5764

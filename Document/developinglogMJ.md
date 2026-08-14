@@ -1102,16 +1102,57 @@ Illegal instruction (core dumped)
 에서는 정정했지만, **두 README 자체는 이번 세션에서 안 고침** - 다음에 정리
 필요.
 
+### 8. `control.cpp`에도 같은 prearm `present` 비트 수정 반영 (완료)
+
+3번에서 `hybrid_guidance`에만 넣었던 수정을 `control.cpp`의
+`HealthState`/`evaluate_health_breach()`/`apply_health_message()`에도
+동일하게 반영 (사용자 요청). 같은 세 지점, 같은 패턴:
+
+```cpp
+// HealthState에 필드 추가
+bool prearm_present = false;
+bool prearm_healthy = true;
+
+// apply_health_message() - SYS_STATUS 케이스
+health.prearm_present = (s.onboard_control_sensors_present & MAV_SYS_STATUS_PREARM_CHECK) != 0;
+health.prearm_healthy = (s.onboard_control_sensors_health & MAV_SYS_STATUS_PREARM_CHECK) != 0;
+
+// evaluate_health_breach()
+if (h.have_sys_status && limit.require_prearm_healthy && h.prearm_present && !h.prearm_healthy) {
+    reasons.push_back("prearm check unhealthy");
+}
+```
+빌드 확인(경고 없음). SITL로 재검증은 안 함(PC가 이미 꺼진 뒤 반영) - 로직은
+`hybrid_guidance`에서 이미 검증된 것과 동일.
+
+### 9. 포트 정리 + 시뮬레이션 PC 종료 (완료)
+
+- `setting/port.yaml`에 `sim_hosts:` 섹션 신설 - `wsl_droneVideo_relay: 5762`
+  (2026-08-12 세션의 WSL2 PC, `gazeboSim/README.md`가 가정하는 그 경로),
+  `astrohome_192_168_0_116: 5764`(오늘 세션의 PC). 사용자 지적: "5762는 원래
+  다른 컴퓨터랑 연결하던 포트 아니었냐" - 맞음, 두 개의 서로 다른 시뮬레이션
+  PC가 같은 "5762"(SITL의 SERIAL1 고정 포트)를 쓰는 셈이라 프로젝트 기록상
+  헷갈릴 수 있어서 PC별로 다른 번호를 문서화. 5763은 이미 그 PC의 SITL
+  SERIAL2가 쓰고 있어서(`bind port 5763 for SERIAL2`, 4번 항목 로그 참고)
+  제외, 5764로 지정. **지금은 실제로 붙어있는 연결이 아니라 예약/기록용** -
+  다음에 그 PC의 SITL을 다시 켤 때 이 번호를 실제로 쓰려면 별도 릴레이/포트
+  포워딩 설정이 필요함.
+- PC(`192.168.0.116`)의 Gazebo/SITL/MAVProxy 전량 종료(`pkill`). `ufw` 규칙은
+  사용자 지시로 그대로 둠("나머지는 냅둬").
+
 ### ⚠️ 실비행 전 확인할 것 (추가분, 2026-08-14)
 
 - `control/README.md`/`gazeboSim/README.md`의 "Known blocker"(HealthState
   race) 섹션이 stale함 - 2026-08-12(2)에 고쳐진 걸 반영해서 갱신 필요.
 - PC(`192.168.0.116`)의 `ufw` 규칙(이 Jetson IP에서 5762 허용)이 아직 남아
-  있음 - 계속 열어둘지 결정.
+  있음 - 계속 열어둘지는 사용자가 나중에 결정하기로 함(2026-08-14 9번 항목).
 - `decel_rate_per_m`(0.536)은 "5m/0.5m/s, 2m/0.1m/s" 두 점만으로 역산한 값 -
   실측 재조정 필요.
 - `hybrid_guidance`의 STOPPED -> 5초 호버 -> 착륙 경로는 정적 fake 타겟
   한계로 아직 실행 검증 못함 - `--camera` 모드로 후속 검증 필요.
-- `hybrid_guidance`가 수정한 prearm `present` 비트 체크를 `control.cpp`
-  에도 동일하게 반영할지 결정 필요 (지금은 `control.cpp`엔 미반영, 같은
-  허점이 남아있음).
+- (2026-08-14, 8번 항목에서 해결됨) ~~`hybrid_guidance`가 수정한 prearm
+  `present` 비트 체크를 `control.cpp`에도 반영할지 결정 필요~~ →
+  `control.cpp`에도 동일하게 반영 완료, SITL 재검증만 남음.
+- `setting/port.yaml`의 `sim_hosts.astrohome_192_168_0_116: 5764`는 아직
+  예약값뿐 - 실제로 그 PC를 다시 쓸 때 5764를 실제 릴레이 포트로 연결하는
+  작업이 필요.

@@ -224,6 +224,15 @@ struct HealthState {
     double lat = 0;
     double lon = 0;
     bool have_sys_status = false;
+    // present/healthy mirror MAVLink's own two-bit convention
+    // (onboard_control_sensors_present/_health): a sensor bit that isn't
+    // present can't be assumed healthy *or* unhealthy - same "can't be
+    // assumed safe or unsafe" rule already applied above to an unreported
+    // battery_percent/voltage. Verified against one Gazebo/SITL build
+    // (2026-08-14, see Document/developinglogMJ.md): its SYS_STATUS never
+    // sets PREARM_CHECK's present bit at all, so treating health=0 there
+    // as "unhealthy" was a false LOITER trip.
+    bool prearm_present = false;
     bool prearm_healthy = true;
     uint8_t system_status = MAV_STATE_STANDBY;
     uint32_t custom_mode = 0;
@@ -264,7 +273,7 @@ std::vector<std::string> evaluate_health_breach(const HealthState& h, const Heal
         reasons.push_back("gps fix_type=" + std::to_string(static_cast<int>(h.fix_type)) +
                            " satellites=" + std::to_string(static_cast<int>(h.satellites)));
     }
-    if (h.have_sys_status && limit.require_prearm_healthy && !h.prearm_healthy) {
+    if (h.have_sys_status && limit.require_prearm_healthy && h.prearm_present && !h.prearm_healthy) {
         reasons.push_back("prearm check unhealthy");
     }
     if (h.have_sys_status && limit.require_normal_state &&
@@ -302,6 +311,7 @@ void apply_health_message(const mavlink_message_t& msg, HealthState& health,
             mavlink_msg_sys_status_decode(&msg, &s);
             health.battery_percent = s.battery_remaining;
             health.battery_voltage_v = s.voltage_battery == 65535 ? -1 : s.voltage_battery / 1000.0;
+            health.prearm_present = (s.onboard_control_sensors_present & MAV_SYS_STATUS_PREARM_CHECK) != 0;
             health.prearm_healthy = (s.onboard_control_sensors_health & MAV_SYS_STATUS_PREARM_CHECK) != 0;
             health.have_battery = true;
             health.have_sys_status = true;
