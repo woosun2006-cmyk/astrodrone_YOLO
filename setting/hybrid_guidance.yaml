@@ -1,0 +1,40 @@
+# Tunables for control/new_algorithm/hybrid_guidance (Document/algorithm-renewer.md
+# section 20, 2026-08-14 revision). Kept in its own file rather than added to
+# MAVLink.yaml/safety.yaml so nothing under setting/ that control.cpp /
+# target_distance.cpp already read has to change - this file is new, they
+# are untouched.
+#
+# Shape: constant-speed cruise while distance_m > shell_radius_m, a
+# re-verify hold right after crossing inside shell_radius_m, then an
+# exponential-decay approach down to stop_radius_m where velocity is
+# hard-floored to zero. Every cycle's forward/lateral split is a
+# Pythagorean decomposition of distance_m and the x_px-derived lateral
+# offset, so movement is diagonal (straight at the target) rather than
+# turn-then-go.
+#
+# pixel_focal_length_px is intentionally NOT duplicated here -
+# hybrid_guidance_main.cpp reads MAVLink.yaml's target_track.pixel_focal_length_px
+# directly, the same calibration value target_distance.cpp already uses.
+
+shell_radius_m: 5.0   # outer boundary: cruise ends, re-verify gate, decel begins
+stop_radius_m: 1.0    # inner boundary: hard stop
+
+cruise_speed_mps: 0.5     # constant speed while distance_m > shell_radius_m
+# k in v(d) = cruise_speed_mps * exp(-k*(shell_radius_m - d)). Default
+# tuned so v(shell_radius_m)=0.5 m/s and v(shell_radius_m - 3m)=~0.1 m/s
+# (0.5 -> 0.1 over 5m -> 2m) - see algorithm-renewer.md's 2026-08-14
+# curve-shape discussion. Re-derive with k = ln(v_far/v_near) / delta_m
+# if the two reference points change.
+decel_rate_per_m: 0.536
+reverify_hold_sec: 1.0    # continuous tracking required after crossing shell_radius_m
+                          # before decel is allowed to start moving inward
+
+max_yaw_rate: 0.6
+k_yaw_px: 0.006
+
+takeoff_altitude_m: 4.5
+
+control_cycle_ms: 50
+link_stale_ms: 500
+target_lost_land_sec: 10.0
+approach_duration_sec: 60
