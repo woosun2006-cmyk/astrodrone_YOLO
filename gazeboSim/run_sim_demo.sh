@@ -74,13 +74,22 @@ KEEP="${KEEP:-0}"
 PLANE_W="${PLANE_W:-}"
 PLANE_H="${PLANE_H:-}"
 
-# 비행 고도 4.0 m. setting/safety.yaml 의 hard_limit_m(5.0) 아래다.
+# 비행 고도 4.0 m.
 #
-# 타겟이 실사 텍스처 평면이라 고도를 낮출 필요가 없다. 2026-08-15 실측
-# (0812best.onnx, conf 0.25, 640x480, 평면 1.033 x 0.690):
+# setting/safety.yaml 의 altitude_limit 은 2026-08-15 에 soft 4.0->8.0,
+# hard 5.0->10.0 으로 올렸다. 상한은 10 m 지만 **실제 탐지 한계는 6~7 m** 다.
 #
-#   고도   4.0    3.0    2.0    1.5    1.2
-#   conf  0.777  0.838  0.907  0.879  0.733     ← 하강 전 구간 유지
+# 고도별 실측 (0812best.onnx, conf 0.25, 640x480, 평면 1.033 x 0.690):
+#
+#   고도   4.0    5.0    6.0    7.0    8.0    10.0
+#   폭(px)  53     42     35     30     27      21
+#   conf  0.785  0.680  0.651  0.549  0.365  0.000(미탐지)
+#
+# 7 m 를 넘기려면 타겟 텍스처 평면을 키워야 한다(10 m 에서 4 m 와 같은 53 px 를
+# 얻으려면 평면이 약 2.6 m). PLANE_W / PLANE_H 로 조정한다.
+#
+# 하강 구간도 확인돼 있다 — 4.0m 0.777 / 3.0m 0.838 / 2.0m 0.907 / 1.5m 0.879 /
+# 1.2m 0.733 로 전 구간 유지된다.
 #
 # 참고로 WHITE_BASKET_SETUP.md 의 3.10 x 2.07 (640x480 기준) 은 고도 4m 에서
 # 0.959 로 더 높지만 내려오면 무너진다 — 2.0m 0.323, 1.5m 0.334, 1.2m 미탐지.
@@ -90,7 +99,11 @@ ALT="${ALT:-4.0}"
 HOP1="astro@10.0.0.1"           # droneVideo
 JET="astro@192.168.0.216"       # astro-desktop
 DV_LAN=192.168.0.34
-SSHOPT="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
+# UserKnownHostsFile=/dev/null 이라 매 접속이 "처음 보는 호스트"가 되고, ssh 가
+# 그때마다 "Warning: Permanently added ... to the list of known hosts" 를 찍는다.
+# 실제로는 /dev/null 에 쓰므로 아무 데도 안 쌓인다. LogLevel=ERROR 로 그 경고만
+# 끄고 동작은 그대로 둔다.
+SSHOPT="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o LogLevel=ERROR"
 
 if [ "$MODE" = "yolo" ]; then
   DETECTOR="$GZS/gazebo_yolo_target.py"

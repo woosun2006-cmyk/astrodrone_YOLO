@@ -1,0 +1,11 @@
+--- /home/navy513/astrodrone_YOLO/simulation/models/ensamb_with_standoffs/model.sdf.orig	2026-08-15 16:55:32.683634568 +0900
++++ /home/navy513/astrodrone_YOLO/simulation/models/ensamb_with_standoffs/model.sdf	2026-08-15 16:55:32.708834568 +0900
+@@ -270,7 +270,7 @@
+       </axis>
+     </joint>
+     <link name='down_camera_link'>
+-      <pose>0 0 -0.021 0 0 0</pose>
++      <pose>0 0 -0.13 0 0 0</pose>
+       <inertial>
+         <mass>0.001</mass>
+         <inertia>

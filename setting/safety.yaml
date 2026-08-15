@@ -16,8 +16,8 @@
 # (hysteresis, so it doesn't chatter right at the boundary). check_alt.cpp
 # only logs a warning/breach at the same two thresholds.
 altitude_limit:
-  soft_limit_m: 4.0        # warn once altitude passes this
-  hard_limit_m: 5.0        # control.cpp: force a descent past this height
+  soft_limit_m: 8.0        # warn once altitude passes this
+  hard_limit_m: 10.0        # control.cpp: force a descent past this height
   poll_rate_hz: 5          # ALTITUDE message request rate
   descent_speed_mps: 0.5   # max corrective descent speed control.cpp sends
   recovery_margin_m: 0.2   # keep correcting until alt <= hard_limit_m - this
