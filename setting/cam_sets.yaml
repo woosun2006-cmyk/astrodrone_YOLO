@@ -46,7 +46,7 @@ fpslog:                  # test_cam/fpslog.py
 
 yolo_live:                # YOLO_MODEL/cpp/yolo_live.cpp, yolo_headless.cpp
   sensor_id: 0
-  width: 640
-  height: 480
+  width: 1920
+  height: 1080
   fps: 30
   wbmode: 3

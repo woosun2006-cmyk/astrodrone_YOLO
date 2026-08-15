@@ -7,21 +7,39 @@
 
 namespace {
 
-// Decomposes the already-known scalar range (target.distance_m) and the
-// already-known lateral offset (x_px converted to meters) into orthogonal
-// forward/lateral legs via Pythagoras - lateral^2 + forward^2 = distance^2.
-// This is what lets one cycle's velocity command point diagonally straight
-// at the target instead of turning to face it first and only moving
+// Decomposes the vector from the vehicle to the target into the three
+// orthogonal body-frame legs it actually has: forward, lateral (right) and
+// down. This is what lets one cycle's velocity command point diagonally
+// straight at the target instead of turning to face it first and only moving
 // forward afterward (control.cpp's approach_target() does the latter).
+//
+// The two horizontal legs are split out of ground_offset_m - the GROUND
+// range - not out of distance_m. distance_m is the slant range and already
+// has the altitude folded into it (target_distance.cpp:
+// distance = hypot(ground_offset, altitude)), so splitting it against the
+// lateral leg alone made `forward` come out as sqrt(forward_true^2 +
+// altitude^2): the vehicle's own height leaked into a horizontal command.
+// Directly over the target that produced a full-speed forward command with
+// nothing left to travel horizontally, so the vehicle crept past the target
+// instead of stopping (measured 2026-08-15: dist=4.00m alt=4.00m vx=0.29).
+//
+// The altitude is the third leg and is now commanded rather than discarded.
+// By construction forward^2 + lateral^2 + down^2 == ground_offset^2 +
+// altitude^2 == distance_m^2, so scaling the whole vector by
+// speed / distance_m gives a resultant of exactly `speed` aimed along the
+// real line of sight - a true 3D diagonal onto the shell sphere.
 struct BodyVector {
     double forward_m;
     double lateral_m;
+    double down_m;
 };
 
-BodyVector decompose(double distance_m, double lateral_offset_m) {
-    double lateral_clamped = std::clamp(lateral_offset_m, -distance_m, distance_m);
-    double forward = std::sqrt(std::max(0.0, distance_m * distance_m - lateral_clamped * lateral_clamped));
-    return {forward, lateral_clamped};
+BodyVector decompose(const TargetRangeMsg& target, double lateral_offset_m) {
+    double ground = target.ground_offset_m;
+    double lateral_clamped = std::clamp(lateral_offset_m, -ground, ground);
+    double forward = std::sqrt(std::max(0.0, ground * ground - lateral_clamped * lateral_clamped));
+    // +down: the target is on the ground, the vehicle is altitude_m above it.
+    return {forward, lateral_clamped, static_cast<double>(target.altitude_m)};
 }
 
 }  // namespace
@@ -64,10 +82,11 @@ GuidanceCommand compute_guidance(const TargetRangeMsg& target, bool tracking,
         state.reverify_timer_running = false;
         state.reverified = false;
         cmd.mode = GuidanceMode::kCruise;
-        BodyVector bv = decompose(distance_m, lateral_offset_m);
+        BodyVector bv = decompose(target, lateral_offset_m);
         double scale = cfg.cruise_speed_mps / distance_m;  // resultant magnitude == cruise_speed_mps
         cmd.vx = bv.forward_m * scale;
         cmd.vy = bv.lateral_m * scale;
+        cmd.vz = bv.down_m * scale;
         return cmd;
     }
 
@@ -94,9 +113,10 @@ GuidanceCommand compute_guidance(const TargetRangeMsg& target, bool tracking,
     // to exactly 0 by the stop_radius_m check above).
     cmd.mode = GuidanceMode::kDecel;
     double speed = cfg.cruise_speed_mps * std::exp(-cfg.decel_rate_per_m * (cfg.shell_radius_m - distance_m));
-    BodyVector bv = decompose(distance_m, lateral_offset_m);
+    BodyVector bv = decompose(target, lateral_offset_m);
     double scale = speed / distance_m;
     cmd.vx = bv.forward_m * scale;
     cmd.vy = bv.lateral_m * scale;
+    cmd.vz = bv.down_m * scale;
     return cmd;
 }

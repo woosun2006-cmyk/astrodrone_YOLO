@@ -1,0 +1,1 @@
+/usr/bin/c++  -O2 -g -DNDEBUG   CMakeFiles/emergency.dir/emergency.cpp.o  -o emergency libdrone_lib.a -lpthread 

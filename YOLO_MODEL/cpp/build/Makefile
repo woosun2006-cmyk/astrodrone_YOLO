@@ -123,6 +123,19 @@ yolo_live/fast:
 	$(MAKE) -f CMakeFiles/yolo_live.dir/build.make CMakeFiles/yolo_live.dir/build
 .PHONY : yolo_live/fast
 
+#=============================================================================
+# Target rules for targets named yolo_headless
+
+# Build rule for target.
+yolo_headless: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 yolo_headless
+.PHONY : yolo_headless
+
+# fast build rule for target.
+yolo_headless/fast:
+	$(MAKE) -f CMakeFiles/yolo_headless.dir/build.make CMakeFiles/yolo_headless.dir/build
+.PHONY : yolo_headless/fast
+
 home/astro/astro-drone/control/yaml_settings.o: home/astro/astro-drone/control/yaml_settings.cpp.o
 
 .PHONY : home/astro/astro-drone/control/yaml_settings.o
@@ -130,6 +143,7 @@ home/astro/astro-drone/control/yaml_settings.o: home/astro/astro-drone/control/y
 # target to build an object file
 home/astro/astro-drone/control/yaml_settings.cpp.o:
 	$(MAKE) -f CMakeFiles/yolo_live.dir/build.make CMakeFiles/yolo_live.dir/home/astro/astro-drone/control/yaml_settings.cpp.o
+	$(MAKE) -f CMakeFiles/yolo_headless.dir/build.make CMakeFiles/yolo_headless.dir/home/astro/astro-drone/control/yaml_settings.cpp.o
 .PHONY : home/astro/astro-drone/control/yaml_settings.cpp.o
 
 home/astro/astro-drone/control/yaml_settings.i: home/astro/astro-drone/control/yaml_settings.cpp.i
@@ -139,6 +153,7 @@ home/astro/astro-drone/control/yaml_settings.i: home/astro/astro-drone/control/y
 # target to preprocess a source file
 home/astro/astro-drone/control/yaml_settings.cpp.i:
 	$(MAKE) -f CMakeFiles/yolo_live.dir/build.make CMakeFiles/yolo_live.dir/home/astro/astro-drone/control/yaml_settings.cpp.i
+	$(MAKE) -f CMakeFiles/yolo_headless.dir/build.make CMakeFiles/yolo_headless.dir/home/astro/astro-drone/control/yaml_settings.cpp.i
 .PHONY : home/astro/astro-drone/control/yaml_settings.cpp.i
 
 home/astro/astro-drone/control/yaml_settings.s: home/astro/astro-drone/control/yaml_settings.cpp.s
@@ -148,6 +163,7 @@ home/astro/astro-drone/control/yaml_settings.s: home/astro/astro-drone/control/y
 # target to generate assembly for a file
 home/astro/astro-drone/control/yaml_settings.cpp.s:
 	$(MAKE) -f CMakeFiles/yolo_live.dir/build.make CMakeFiles/yolo_live.dir/home/astro/astro-drone/control/yaml_settings.cpp.s
+	$(MAKE) -f CMakeFiles/yolo_headless.dir/build.make CMakeFiles/yolo_headless.dir/home/astro/astro-drone/control/yaml_settings.cpp.s
 .PHONY : home/astro/astro-drone/control/yaml_settings.cpp.s
 
 http_server.o: http_server.cpp.o
@@ -157,6 +173,7 @@ http_server.o: http_server.cpp.o
 # target to build an object file
 http_server.cpp.o:
 	$(MAKE) -f CMakeFiles/yolo_live.dir/build.make CMakeFiles/yolo_live.dir/http_server.cpp.o
+	$(MAKE) -f CMakeFiles/yolo_headless.dir/build.make CMakeFiles/yolo_headless.dir/http_server.cpp.o
 .PHONY : http_server.cpp.o
 
 http_server.i: http_server.cpp.i
@@ -166,6 +183,7 @@ http_server.i: http_server.cpp.i
 # target to preprocess a source file
 http_server.cpp.i:
 	$(MAKE) -f CMakeFiles/yolo_live.dir/build.make CMakeFiles/yolo_live.dir/http_server.cpp.i
+	$(MAKE) -f CMakeFiles/yolo_headless.dir/build.make CMakeFiles/yolo_headless.dir/http_server.cpp.i
 .PHONY : http_server.cpp.i
 
 http_server.s: http_server.cpp.s
@@ -175,6 +193,7 @@ http_server.s: http_server.cpp.s
 # target to generate assembly for a file
 http_server.cpp.s:
 	$(MAKE) -f CMakeFiles/yolo_live.dir/build.make CMakeFiles/yolo_live.dir/http_server.cpp.s
+	$(MAKE) -f CMakeFiles/yolo_headless.dir/build.make CMakeFiles/yolo_headless.dir/http_server.cpp.s
 .PHONY : http_server.cpp.s
 
 report.o: report.cpp.o
@@ -184,6 +203,7 @@ report.o: report.cpp.o
 # target to build an object file
 report.cpp.o:
 	$(MAKE) -f CMakeFiles/yolo_live.dir/build.make CMakeFiles/yolo_live.dir/report.cpp.o
+	$(MAKE) -f CMakeFiles/yolo_headless.dir/build.make CMakeFiles/yolo_headless.dir/report.cpp.o
 .PHONY : report.cpp.o
 
 report.i: report.cpp.i
@@ -193,6 +213,7 @@ report.i: report.cpp.i
 # target to preprocess a source file
 report.cpp.i:
 	$(MAKE) -f CMakeFiles/yolo_live.dir/build.make CMakeFiles/yolo_live.dir/report.cpp.i
+	$(MAKE) -f CMakeFiles/yolo_headless.dir/build.make CMakeFiles/yolo_headless.dir/report.cpp.i
 .PHONY : report.cpp.i
 
 report.s: report.cpp.s
@@ -202,6 +223,7 @@ report.s: report.cpp.s
 # target to generate assembly for a file
 report.cpp.s:
 	$(MAKE) -f CMakeFiles/yolo_live.dir/build.make CMakeFiles/yolo_live.dir/report.cpp.s
+	$(MAKE) -f CMakeFiles/yolo_headless.dir/build.make CMakeFiles/yolo_headless.dir/report.cpp.s
 .PHONY : report.cpp.s
 
 sysinfo.o: sysinfo.cpp.o
@@ -211,6 +233,7 @@ sysinfo.o: sysinfo.cpp.o
 # target to build an object file
 sysinfo.cpp.o:
 	$(MAKE) -f CMakeFiles/yolo_live.dir/build.make CMakeFiles/yolo_live.dir/sysinfo.cpp.o
+	$(MAKE) -f CMakeFiles/yolo_headless.dir/build.make CMakeFiles/yolo_headless.dir/sysinfo.cpp.o
 .PHONY : sysinfo.cpp.o
 
 sysinfo.i: sysinfo.cpp.i
@@ -220,6 +243,7 @@ sysinfo.i: sysinfo.cpp.i
 # target to preprocess a source file
 sysinfo.cpp.i:
 	$(MAKE) -f CMakeFiles/yolo_live.dir/build.make CMakeFiles/yolo_live.dir/sysinfo.cpp.i
+	$(MAKE) -f CMakeFiles/yolo_headless.dir/build.make CMakeFiles/yolo_headless.dir/sysinfo.cpp.i
 .PHONY : sysinfo.cpp.i
 
 sysinfo.s: sysinfo.cpp.s
@@ -229,6 +253,7 @@ sysinfo.s: sysinfo.cpp.s
 # target to generate assembly for a file
 sysinfo.cpp.s:
 	$(MAKE) -f CMakeFiles/yolo_live.dir/build.make CMakeFiles/yolo_live.dir/sysinfo.cpp.s
+	$(MAKE) -f CMakeFiles/yolo_headless.dir/build.make CMakeFiles/yolo_headless.dir/sysinfo.cpp.s
 .PHONY : sysinfo.cpp.s
 
 trt_engine.o: trt_engine.cpp.o
@@ -238,6 +263,7 @@ trt_engine.o: trt_engine.cpp.o
 # target to build an object file
 trt_engine.cpp.o:
 	$(MAKE) -f CMakeFiles/yolo_live.dir/build.make CMakeFiles/yolo_live.dir/trt_engine.cpp.o
+	$(MAKE) -f CMakeFiles/yolo_headless.dir/build.make CMakeFiles/yolo_headless.dir/trt_engine.cpp.o
 .PHONY : trt_engine.cpp.o
 
 trt_engine.i: trt_engine.cpp.i
@@ -247,6 +273,7 @@ trt_engine.i: trt_engine.cpp.i
 # target to preprocess a source file
 trt_engine.cpp.i:
 	$(MAKE) -f CMakeFiles/yolo_live.dir/build.make CMakeFiles/yolo_live.dir/trt_engine.cpp.i
+	$(MAKE) -f CMakeFiles/yolo_headless.dir/build.make CMakeFiles/yolo_headless.dir/trt_engine.cpp.i
 .PHONY : trt_engine.cpp.i
 
 trt_engine.s: trt_engine.cpp.s
@@ -256,7 +283,35 @@ trt_engine.s: trt_engine.cpp.s
 # target to generate assembly for a file
 trt_engine.cpp.s:
 	$(MAKE) -f CMakeFiles/yolo_live.dir/build.make CMakeFiles/yolo_live.dir/trt_engine.cpp.s
+	$(MAKE) -f CMakeFiles/yolo_headless.dir/build.make CMakeFiles/yolo_headless.dir/trt_engine.cpp.s
 .PHONY : trt_engine.cpp.s
+
+yolo_headless.o: yolo_headless.cpp.o
+
+.PHONY : yolo_headless.o
+
+# target to build an object file
+yolo_headless.cpp.o:
+	$(MAKE) -f CMakeFiles/yolo_headless.dir/build.make CMakeFiles/yolo_headless.dir/yolo_headless.cpp.o
+.PHONY : yolo_headless.cpp.o
+
+yolo_headless.i: yolo_headless.cpp.i
+
+.PHONY : yolo_headless.i
+
+# target to preprocess a source file
+yolo_headless.cpp.i:
+	$(MAKE) -f CMakeFiles/yolo_headless.dir/build.make CMakeFiles/yolo_headless.dir/yolo_headless.cpp.i
+.PHONY : yolo_headless.cpp.i
+
+yolo_headless.s: yolo_headless.cpp.s
+
+.PHONY : yolo_headless.s
+
+# target to generate assembly for a file
+yolo_headless.cpp.s:
+	$(MAKE) -f CMakeFiles/yolo_headless.dir/build.make CMakeFiles/yolo_headless.dir/yolo_headless.cpp.s
+.PHONY : yolo_headless.cpp.s
 
 yolo_live.o: yolo_live.cpp.o
 
@@ -292,8 +347,9 @@ help:
 	@echo "... clean"
 	@echo "... depend"
 	@echo "... rebuild_cache"
-	@echo "... yolo_live"
 	@echo "... edit_cache"
+	@echo "... yolo_live"
+	@echo "... yolo_headless"
 	@echo "... home/astro/astro-drone/control/yaml_settings.o"
 	@echo "... home/astro/astro-drone/control/yaml_settings.i"
 	@echo "... home/astro/astro-drone/control/yaml_settings.s"
@@ -309,6 +365,9 @@ help:
 	@echo "... trt_engine.o"
 	@echo "... trt_engine.i"
 	@echo "... trt_engine.s"
+	@echo "... yolo_headless.o"
+	@echo "... yolo_headless.i"
+	@echo "... yolo_headless.s"
 	@echo "... yolo_live.o"
 	@echo "... yolo_live.i"
 	@echo "... yolo_live.s"

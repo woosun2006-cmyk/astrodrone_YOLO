@@ -1,0 +1,24 @@
+#IncludeRegexLine: ^[ 	]*[#%][ 	]*(include|import)[ 	]*[<"]([^">]+)([">])
+
+#IncludeRegexScan: ^.*$
+
+#IncludeRegexComplain: ^$
+
+#IncludeRegexTransform: 
+
+/home/astro/astro-drone/control/target_json.cpp
+target_json.hpp
+/home/astro/astro-drone/control/target_json.hpp
+cctype
+-
+cmath
+-
+string_view
+-
+
+/home/astro/astro-drone/control/target_json.hpp
+optional
+-
+string
+-
+

@@ -1,6 +1,6 @@
 real:
   serial:
-    address: /dev/ttyACM1
+    address: /dev/ttyACM0
     baud: 115200
   proxy_udp:
     address: udp:127.0.0.1:14550

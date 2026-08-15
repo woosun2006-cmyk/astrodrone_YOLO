@@ -1,0 +1,1 @@
+/usr/bin/c++  -O2 -g -DNDEBUG   CMakeFiles/control.dir/control.cpp.o  -o control libdrone_lib.a -lpthread 

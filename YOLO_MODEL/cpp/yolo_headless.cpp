@@ -356,9 +356,10 @@ void draw_detections(cv::Mat& img, const std::vector<Detection>& dets, const std
 // ---------------------------------------------------------------------------
 
 void grabber(SharedState& state, cv::Vec3f wb_gains_bgr) {
+    const int sensor_height = HEIGHT;
     std::ostringstream p;
     p << "nvarguscamerasrc sensor-id=" << SENSOR_ID << " wbmode=" << WBMODE << " ! "
-      << "video/x-raw(memory:NVMM),width=" << WIDTH << ",height=" << HEIGHT << ",format=NV12,framerate=" << CAM_FPS
+      << "video/x-raw(memory:NVMM),width=" << WIDTH << ",height=" << sensor_height << ",format=NV12,framerate=" << CAM_FPS
       << "/1 ! "
       << "nvvidconv flip-method=0 ! "
       << "video/x-raw,width=" << WIDTH << ",height=" << HEIGHT << ",format=BGRx ! "

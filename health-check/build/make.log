@@ -1,0 +1,26 @@
+Scanning dependencies of target drone_lib
+[ 21%] Building CXX object CMakeFiles/drone_lib.dir/drone_lib.cpp.o
+[ 21%] Building CXX object CMakeFiles/drone_lib.dir/yaml_settings.cpp.o
+[ 21%] Building CXX object CMakeFiles/drone_lib.dir/mav_transport.cpp.o
+[ 28%] Linking CXX static library libdrone_lib.a
+[ 28%] Built target drone_lib
+Scanning dependencies of target get_gps_location
+Scanning dependencies of target emergency
+Scanning dependencies of target check_link
+Scanning dependencies of target check_alt
+[ 35%] Building CXX object CMakeFiles/get_gps_location.dir/get_gps_location.cpp.o
+[ 42%] Building CXX object CMakeFiles/emergency.dir/emergency.cpp.o
+[ 50%] Building CXX object CMakeFiles/check_link.dir/check_link.cpp.o
+[ 57%] Building CXX object CMakeFiles/check_alt.dir/check_alt.cpp.o
+[ 64%] Linking CXX executable check_link
+[ 71%] Linking CXX executable check_alt
+[ 71%] Built target check_link
+[ 71%] Built target check_alt
+Scanning dependencies of target test_arm
+[ 78%] Building CXX object CMakeFiles/test_arm.dir/test_arm.cpp.o
+[ 85%] Linking CXX executable get_gps_location
+[ 85%] Built target get_gps_location
+[ 92%] Linking CXX executable emergency
+[ 92%] Built target emergency
+[100%] Linking CXX executable test_arm
+[100%] Built target test_arm

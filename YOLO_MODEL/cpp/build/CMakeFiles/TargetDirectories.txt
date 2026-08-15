@@ -1,3 +1,4 @@
 /home/astro/astro-drone/YOLO_MODEL/cpp/build/CMakeFiles/rebuild_cache.dir
-/home/astro/astro-drone/YOLO_MODEL/cpp/build/CMakeFiles/yolo_live.dir
 /home/astro/astro-drone/YOLO_MODEL/cpp/build/CMakeFiles/edit_cache.dir
+/home/astro/astro-drone/YOLO_MODEL/cpp/build/CMakeFiles/yolo_live.dir
+/home/astro/astro-drone/YOLO_MODEL/cpp/build/CMakeFiles/yolo_headless.dir

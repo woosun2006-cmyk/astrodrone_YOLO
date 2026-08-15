@@ -8,16 +8,21 @@
 // to GUIDED and takes over - same shape as control.cpp's
 // run_auto_intercept()/wait_for_lock(), re-implemented here (not linked
 // against control.cpp) because those are private functions in
-// control.cpp's anonymous namespace. control/README.md and
-// gazeboSim/README.md's "Known blocker" section describes a HealthState
-// race in that path (a fresh HealthState created on every outer-loop pass,
-// so wait_for_lock() checks health.have_armed before a HEARTBEAT has had a
-// chance to arrive and bails out instantly) - that was already fixed in
-// control.cpp on 2026-08-12 (Document/developinglogMJ.md), the READMEs
-// just weren't updated to say so. This re-implementation follows the same
-// already-fixed pattern: `health` below is declared once and never
+// control.cpp's anonymous namespace. gazeboSim/README.md's "Resolved
+// (2026-08-12)" section records a HealthState race that used to live in
+// that path (a fresh HealthState created on every outer-loop pass, so
+// wait_for_lock() checked health.have_armed before a HEARTBEAT had a
+// chance to arrive and bailed out instantly). It was fixed in control.cpp
+// on 2026-08-12 by commit 7d85d66 (Document/developinglogMJ.md) - but not
+// by hoisting the HealthState out of the loop: run_auto_intercept() still
+// declares a fresh one per pass (control.cpp:932-933). What closed the race
+// there is wait_for_auto_armed() seeding the caller's HealthState from the
+// HEARTBEAT it had already decoded, plus wait_for_lock() taking
+// HealthState& by reference (control.cpp:829). This file closes the same
+// race a different way: `health` below is declared exactly once and never
 // recreated, so it always reflects whatever HEARTBEATs have actually been
-// seen so far.
+// seen so far. (control/README.md has no such section - only
+// gazeboSim/README.md ever carried it.)
 //
 // Should be launched instead of `control`, not alongside it - both would
 // fight over the same target_track.udp_port receiver socket.
@@ -127,7 +132,16 @@ void apply_health(const mavlink_message_t& msg, HealthSnapshot& health,
             mavlink_sys_status_t s;
             mavlink_msg_sys_status_decode(&msg, &s);
             health.battery_percent = s.battery_remaining;
-            health.battery_voltage_v = s.voltage_battery == 65535 ? -1 : s.voltage_battery / 1000.0;
+            // 65535 is MAVLink's explicit "unknown"; 0 mV is what a flight
+            // controller with no battery monitor configured actually sends.
+            // Both mean "unreported", not "0 V" - mapping 0 to a real reading
+            // made health_breach() below see a critically flat battery and
+            // hand off to LOITER one cycle after taking over. That contradicts
+            // the "can't be assumed safe or unsafe" rule this file already
+            // applies to battery_remaining == -1 (see the struct comment above).
+            health.battery_voltage_v = (s.voltage_battery == 65535 || s.voltage_battery == 0)
+                                            ? -1
+                                            : s.voltage_battery / 1000.0;
             health.prearm_present = (s.onboard_control_sensors_present & MAV_SYS_STATUS_PREARM_CHECK) != 0;
             health.prearm_healthy = (s.onboard_control_sensors_health & MAV_SYS_STATUS_PREARM_CHECK) != 0;
             break;
@@ -463,11 +477,12 @@ int main() {
                           << "s [ALT-LIMIT] alt=" << alt << "m vz=" << vz << std::endl;
             } else {
                 GuidanceCommand cmd = compute_guidance(last, tracking, cfg, guidance_state, cycle_start);
-                drone::send_velocity_body(cmd.vx, cmd.vy, 0.0, cmd.yaw_rate);
+                drone::send_velocity_body(cmd.vx, cmd.vy, cmd.vz, cmd.yaw_rate);
                 std::cout << std::fixed << std::setprecision(2) << "t=" << elapsed_sec << "s "
                           << (tracking ? "TRACK" : "LOST ") << " mode=" << mode_name(cmd.mode)
                           << " dist=" << last.distance_m << "m vx=" << cmd.vx << " vy=" << cmd.vy
-                          << " alt=" << alt << "m armed=" << (health.armed ? "Y" : "N") << std::endl;
+                          << " vz=" << cmd.vz << " alt=" << alt << "m armed=" << (health.armed ? "Y" : "N")
+                          << std::endl;
 
                 // Document/algorithm.md's "1m 하드정지 이후 동작" open item:
                 // hover at the stop point for stop_hover_sec, then land. The

@@ -9,12 +9,20 @@
 // design discussion behind this shape:
 //
 //   cruise (distance_m > shell_radius_m): constant cruise_speed_mps,
-//     straight at the target - both forward and lateral components are
-//     commanded in the SAME cycle (diagonal), not "turn to face it, then
-//     go forward" like control.cpp's approach_target(). The forward/
-//     lateral split is a Pythagorean decomposition of the already-known
-//     scalar range (target.distance_m) and the already-known lateral
-//     offset (x_px converted to meters) - see hybrid_guidance.cpp.
+//     straight at the target - forward, lateral AND vertical components are
+//     commanded in the SAME cycle (a true 3D diagonal), not "turn to face
+//     it, then go forward" like control.cpp's approach_target(). The two
+//     horizontal legs are split out of target.ground_offset_m against the
+//     x_px-derived lateral offset; the vertical leg is target.altitude_m.
+//     Their resultant is exactly distance_m, so the command points along the
+//     real line of sight - see hybrid_guidance.cpp.
+//
+//     The vertical leg matters, it is not decoration: distance_m is a slant
+//     range (hypot(ground_offset, altitude)), so it can never fall below the
+//     vehicle's altitude. With a horizontal-only command the vehicle closes
+//     the ground offset, distance_m bottoms out at the flight altitude, and
+//     stop_radius_m is unreachable for any altitude above it. Descending
+//     along the line of sight is what actually shrinks the slant range.
 //   reverify (just crossed inside shell_radius_m): hold position, require
 //     `tracking` to stay true for reverify_hold_sec before proceeding -
 //     this is the control-layer's half of the two-gate false-positive
@@ -67,6 +75,9 @@ struct GuidanceCommand {
     GuidanceMode mode = GuidanceMode::kHold;
     double vx = 0.0;        // body-frame forward speed (m/s), +forward
     double vy = 0.0;        // body-frame lateral speed (m/s), +right
+    double vz = 0.0;        // body-frame vertical speed (m/s), +DOWN (NED), so a
+                            // positive value descends - same sign convention
+                            // hybrid_guidance_main.cpp's altitude-limit law uses.
     double yaw_rate = 0.0;  // +clockwise (right), same sign convention as control.cpp
 };
 

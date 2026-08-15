@@ -1,0 +1,8 @@
+/home/astro/astro-drone/control/build/CMakeFiles/rebuild_cache.dir
+/home/astro/astro-drone/control/build/CMakeFiles/edit_cache.dir
+/home/astro/astro-drone/control/build/CMakeFiles/target_json.dir
+/home/astro/astro-drone/control/build/CMakeFiles/mavlink_proxy.dir
+/home/astro/astro-drone/control/build/CMakeFiles/drone_lib.dir
+/home/astro/astro-drone/control/build/CMakeFiles/control.dir
+/home/astro/astro-drone/control/build/CMakeFiles/target_distance.dir
+/home/astro/astro-drone/control/build/CMakeFiles/motor_test.dir

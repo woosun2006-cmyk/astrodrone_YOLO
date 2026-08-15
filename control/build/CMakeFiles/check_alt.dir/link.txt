@@ -1,0 +1,1 @@
+/usr/bin/c++  -O3 -DNDEBUG   CMakeFiles/check_alt.dir/check_alt.cpp.o  -o check_alt libdrone_lib.a -lpthread 

@@ -1,0 +1,1 @@
+/usr/bin/c++  -O3 -DNDEBUG   CMakeFiles/get_gps_location.dir/get_gps_location.cpp.o  -o get_gps_location libdrone_lib.a -lpthread 

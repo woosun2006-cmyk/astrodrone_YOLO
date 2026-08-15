@@ -1,0 +1,8 @@
+/home/astro/astro-drone/health-check/build/CMakeFiles/rebuild_cache.dir
+/home/astro/astro-drone/health-check/build/CMakeFiles/edit_cache.dir
+/home/astro/astro-drone/health-check/build/CMakeFiles/check_link.dir
+/home/astro/astro-drone/health-check/build/CMakeFiles/check_alt.dir
+/home/astro/astro-drone/health-check/build/CMakeFiles/get_gps_location.dir
+/home/astro/astro-drone/health-check/build/CMakeFiles/drone_lib.dir
+/home/astro/astro-drone/health-check/build/CMakeFiles/emergency.dir
+/home/astro/astro-drone/health-check/build/CMakeFiles/test_arm.dir

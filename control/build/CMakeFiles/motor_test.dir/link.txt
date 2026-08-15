@@ -1,0 +1,1 @@
+/usr/bin/c++  -O2 -g -DNDEBUG   CMakeFiles/motor_test.dir/motor_test.cpp.o  -o motor_test libdrone_lib.a -lpthread 

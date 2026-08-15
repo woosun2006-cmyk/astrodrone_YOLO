@@ -1,0 +1,3 @@
+/home/astro/astro-drone/control/new_algorithm/build/CMakeFiles/rebuild_cache.dir
+/home/astro/astro-drone/control/new_algorithm/build/CMakeFiles/hybrid_guidance.dir
+/home/astro/astro-drone/control/new_algorithm/build/CMakeFiles/edit_cache.dir

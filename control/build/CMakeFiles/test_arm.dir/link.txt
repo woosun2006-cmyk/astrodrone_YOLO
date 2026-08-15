@@ -1,0 +1,1 @@
+/usr/bin/c++  -O3 -DNDEBUG   CMakeFiles/test_arm.dir/test_arm.cpp.o  -o test_arm libdrone_lib.a -lpthread 

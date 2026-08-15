@@ -1,26 +1,16 @@
 <?xml version="1.0" ?>
 <!--
-  Simulation target, derived from simulation/models/target_basket with two
-  deliberate changes. simulation/ itself is never modified.
+  YOLO simulation target matched to the real training target: an off-white,
+  perforated plastic basket.  The collision box retains the real dimensions.
 
-  1. Red instead of white. gazebo_camera_target.py segments by HSV, and the
-     original white basket is indistinguishable from the runway and washed-out
-     grass in the rendered feed.
+  The detector-facing visual uses a tightly cropped real reference appearance
+  from the training set.  At the 4 m diagnostic altitude its 1.033 x 0.690 m
+  plane reproduces the same ~111 x 69 px basket footprint that the model saw
+  in high-confidence training tiles when rendered by the 1920 x 1080 camera.
+  It is deliberately a visual proxy, not the physical basket scale.
 
-  2. Scaled 8x (mesh scale 0.001 -> 0.008, collision box scaled to match), so
-     the real footprint becomes ~1.90 x 1.10 x 0.56 m.
-
-  The scale exists because of the simulated camera's field of view, not
-  because the real basket is that size. ensamb_with_standoffs' down_camera
-  uses horizontal_fov 2.7507 rad (~157 deg): at 4 m altitude that covers
-  roughly 39 m of ground across 640 px, i.e. ~16 px per metre. The original
-  0.238 m basket therefore renders about 4 px wide - an ~8 px^2 blob, below
-  any usable contour threshold and far too noisy to hold a lock. At 8x it is
-  ~30 px wide (~450 px^2), which segments cleanly and holds `confirmed`
-  steady.
-
-  Re-tune this if you change the camera FOV or the test altitude. Anything
-  that makes the target subtend fewer than ~15 px will stop locking reliably.
+  Collision stays at the real basket dimensions (~0.238 x 0.138 x 0.070 m),
+  so the enlarged rendering cannot trap or block the simulated aircraft.
 -->
 <sdf version="1.9">
   <model name="target_basket">
@@ -29,26 +19,34 @@
       <pose>0 0 0 0 0 0</pose>
 
       <collision name="basket_collision">
-        <pose>0 0 0.28 0 0 0</pose>
+        <pose>0 0 0.035 0 0 0</pose>
         <geometry>
           <box>
-            <size>1.904 1.104 0.560</size>
+            <size>0.238 0.138 0.070</size>
           </box>
         </geometry>
       </collision>
 
-      <visual name="basket_visual">
-        <pose>-0.880 -0.480 0 0 0 0</pose>
+      <visual name="basket_detector_visual">
+        <pose>0 0 0.004 0 0 0</pose>
+        <cast_shadows>false</cast_shadows>
         <geometry>
-          <mesh>
-            <uri>model://target_basket/meshes/basket.stl</uri>
-            <scale>0.008 0.008 0.008</scale>
-          </mesh>
+          <plane>
+            <normal>0 0 1</normal>
+            <size>1.033 0.690</size>
+          </plane>
         </geometry>
         <material>
-          <ambient>0.8 0.05 0.05 1</ambient>
-          <diffuse>0.9 0.05 0.05 1</diffuse>
-          <specular>0.2 0.2 0.2 1</specular>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+          <specular>0 0 0 1</specular>
+          <pbr>
+            <metal>
+              <albedo_map>materials/textures/white_basket_reference_crop.png</albedo_map>
+              <roughness>1.0</roughness>
+              <metalness>0</metalness>
+            </metal>
+          </pbr>
         </material>
       </visual>
     </link>

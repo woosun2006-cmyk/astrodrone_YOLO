@@ -1,0 +1,1 @@
+/usr/bin/c++  -O2 -g -DNDEBUG   CMakeFiles/check_link.dir/check_link.cpp.o  -o check_link libdrone_lib.a -lpthread 

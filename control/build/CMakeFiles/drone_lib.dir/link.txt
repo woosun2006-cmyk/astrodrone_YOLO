@@ -1,0 +1,2 @@
+/usr/bin/ar qc libdrone_lib.a  CMakeFiles/drone_lib.dir/drone_lib.cpp.o CMakeFiles/drone_lib.dir/mav_transport.cpp.o CMakeFiles/drone_lib.dir/yaml_settings.cpp.o CMakeFiles/drone_lib.dir/target_link.cpp.o CMakeFiles/drone_lib.dir/pos_calculator.cpp.o
+/usr/bin/ranlib libdrone_lib.a

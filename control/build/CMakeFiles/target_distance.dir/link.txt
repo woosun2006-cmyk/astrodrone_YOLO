@@ -1,0 +1,1 @@
+/usr/bin/c++  -O2 -g -DNDEBUG   CMakeFiles/target_distance.dir/target_distance.cpp.o  -o target_distance libdrone_lib.a libtarget_json.a -lpthread 

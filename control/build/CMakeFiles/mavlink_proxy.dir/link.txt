@@ -1,0 +1,1 @@
+/usr/bin/c++  -O2 -g -DNDEBUG   CMakeFiles/mavlink_proxy.dir/mavlink_proxy.cpp.o  -o mavlink_proxy libdrone_lib.a -lpthread 

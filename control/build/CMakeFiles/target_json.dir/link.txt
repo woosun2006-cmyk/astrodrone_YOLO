@@ -1,0 +1,2 @@
+/usr/bin/ar qc libtarget_json.a  CMakeFiles/target_json.dir/target_json.cpp.o
+/usr/bin/ranlib libtarget_json.a

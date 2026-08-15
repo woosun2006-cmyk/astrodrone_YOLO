@@ -1,0 +1,225 @@
+[34m[1mexport: [0mdata=data/coco128.yaml, weights=['/home/astro/astro-drone/YOLO_MODEL/prototype.pt'], imgsz=[256, 320], batch_size=1, device=0, half=False, inplace=False, keras=False, optimize=False, int8=False, dynamic=False, simplify=True, opset=12, verbose=False, workspace=1, nms=False, agnostic_nms=False, topk_per_class=100, topk_all=100, iou_thres=0.45, conf_thres=0.25, include=['onnx', 'engine']
+YOLOv5 🚀 v7.0-0-g915bbf2 Python-3.6.9 torch-1.10.0 CUDA:0 (NVIDIA Tegra X1, 3956MiB)
+
+Fusing layers... 
+Model summary: 157 layers, 1760518 parameters, 0 gradients, 4.1 GFLOPs
+
+[34m[1mPyTorch:[0m starting from /home/astro/astro-drone/YOLO_MODEL/prototype.pt with output shape (1, 5040, 6) (3.6 MB)
+
+[34m[1mONNX:[0m starting export with onnx 1.11.0...
+[34m[1mONNX:[0m simplifier failure: No module named 'onnxsim'
+[34m[1mONNX:[0m export success ✅ 14.1s, saved as /home/astro/astro-drone/YOLO_MODEL/prototype.onnx (6.8 MB)
+
+[34m[1mTensorRT:[0m starting export with TensorRT 8.2.1.8...
+[08/10/2026-04:00:30] [TRT] [I] [MemUsageChange] Init CUDA: CPU +204, GPU -17, now: CPU 2346, GPU 3477 (MiB)
+[08/10/2026-04:00:34] [TRT] [I] [MemUsageSnapshot] Begin constructing builder kernel library: CPU 2346 MiB, GPU 3503 MiB
+[08/10/2026-04:00:34] [TRT] [I] [MemUsageSnapshot] End constructing builder kernel library: CPU 2376 MiB, GPU 3519 MiB
+[08/10/2026-04:00:34] [TRT] [I] ----------------------------------------------------------------
+[08/10/2026-04:00:34] [TRT] [I] Input filename:   /home/astro/astro-drone/YOLO_MODEL/prototype.onnx
+[08/10/2026-04:00:34] [TRT] [I] ONNX IR version:  0.0.7
+[08/10/2026-04:00:34] [TRT] [I] Opset version:    12
+[08/10/2026-04:00:34] [TRT] [I] Producer name:    pytorch
+[08/10/2026-04:00:34] [TRT] [I] Producer version: 1.10
+[08/10/2026-04:00:34] [TRT] [I] Domain:           
+[08/10/2026-04:00:34] [TRT] [I] Model version:    0
+[08/10/2026-04:00:34] [TRT] [I] Doc string:       
+[08/10/2026-04:00:34] [TRT] [I] ----------------------------------------------------------------
+[08/10/2026-04:00:34] [TRT] [W] onnx2trt_utils.cpp:366: Your ONNX model has been generated with INT64 weights, while TensorRT does not natively support INT64. Attempting to cast down to INT32.
+[34m[1mTensorRT:[0m input "images" with shape(1, 3, 256, 320) DataType.FLOAT
+[34m[1mTensorRT:[0m output "output0" with shape(1, 5040, 6) DataType.FLOAT
+[34m[1mTensorRT:[0m building FP32 engine as /home/astro/astro-drone/YOLO_MODEL/prototype.engine
+[08/10/2026-04:00:35] [TRT] [I] ---------- Layers Running on DLA ----------
+[08/10/2026-04:00:35] [TRT] [I] ---------- Layers Running on GPU ----------
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_0
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_1), Mul_2)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_3
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_4), Mul_5)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_6 || Conv_16
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_7), Mul_8)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_9
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_10), Mul_11)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_12
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(PWN(Sigmoid_13), Mul_14), Add_15)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_17), Mul_18)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_20
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_21), Mul_22)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_23
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_24), Mul_25)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_26 || Conv_43
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_27), Mul_28)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_29
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_30), Mul_31)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_32
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(PWN(Sigmoid_33), Mul_34), Add_35)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_36
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_37), Mul_38)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_39
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(PWN(Sigmoid_40), Mul_41), Add_42)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_44), Mul_45)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_47
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_48), Mul_49)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_50
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_51), Mul_52)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_53 || Conv_77
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_54), Mul_55)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_56
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_57), Mul_58)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_59
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(PWN(Sigmoid_60), Mul_61), Add_62)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_63
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_64), Mul_65)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_66
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(PWN(Sigmoid_67), Mul_68), Add_69)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_70
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_71), Mul_72)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_73
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(PWN(Sigmoid_74), Mul_75), Add_76)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_78), Mul_79)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_81
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_82), Mul_83)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_84
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_85), Mul_86)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_87 || Conv_97
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_88), Mul_89)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_90
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_91), Mul_92)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_93
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(PWN(Sigmoid_94), Mul_95), Add_96)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_98), Mul_99)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_101
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_102), Mul_103)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_104
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_105), Mul_106)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] MaxPool_107
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] MaxPool_108
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] MaxPool_109
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] 228 copy
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] 229 copy
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] 230 copy
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] 231 copy
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_111
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_112), Mul_113)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_114
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_115), Mul_116)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Resize_118
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] 243 copy
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_120 || Conv_129
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_121), Mul_122)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_123
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_124), Mul_125)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_126
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_127), Mul_128)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_130), Mul_131)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_133
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_134), Mul_135)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_136
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_137), Mul_138)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Resize_140
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] 268 copy
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_142 || Conv_151
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_143), Mul_144)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_145
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_146), Mul_147)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_148
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_149), Mul_150)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_152), Mul_153)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_155
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_156), Mul_157)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_158
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_159), Mul_160)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] 263 copy
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_162 || Conv_171
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_163), Mul_164)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_165
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_166), Mul_167)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_168
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_169), Mul_170)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_172), Mul_173)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_175
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_176), Mul_177)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_178
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_179), Mul_180)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] 238 copy
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_182 || Conv_191
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_183), Mul_184)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_185
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_186), Mul_187)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_188
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_189), Mul_190)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_192), Mul_193)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_195
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(Sigmoid_196), Mul_197)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_198
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Reshape_199 + Transpose_200
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(Sigmoid_201)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Split_202
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Split_202_0
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Split_202_1
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] 346
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(344 + (Unnamed Layer* 204) [Shuffle] + Mul_204, Add_206), 348 + (Unnamed Layer* 209) [Shuffle] + Mul_208)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] 354
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(352 + (Unnamed Layer* 215) [Shuffle], PWN(350 + (Unnamed Layer* 212) [Shuffle] + Mul_210, Pow_212)), Mul_214)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] 349 copy
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] 355 copy
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] 343 copy
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Reshape_216
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_217
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Reshape_218 + Transpose_219
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(Sigmoid_220)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Split_221
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Split_221_2
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Split_221_3
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] 384
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(382 + (Unnamed Layer* 229) [Shuffle] + Mul_223, Add_225), 386 + (Unnamed Layer* 234) [Shuffle] + Mul_227)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] 392
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(390 + (Unnamed Layer* 240) [Shuffle], PWN(388 + (Unnamed Layer* 237) [Shuffle] + Mul_229, Pow_231)), Mul_233)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] 387 copy
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] 393 copy
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] 381 copy
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Reshape_235
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Conv_236
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Reshape_237 + Transpose_238
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(Sigmoid_239)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Split_240
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Split_240_4
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Split_240_5
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] 422
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(420 + (Unnamed Layer* 254) [Shuffle] + Mul_242, Add_244), 424 + (Unnamed Layer* 259) [Shuffle] + Mul_246)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] 430
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] PWN(PWN(428 + (Unnamed Layer* 265) [Shuffle], PWN(426 + (Unnamed Layer* 262) [Shuffle] + Mul_248, Pow_250)), Mul_252)
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] 425 copy
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] 431 copy
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] 419 copy
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] Reshape_254
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] 363 copy
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] 401 copy
+[08/10/2026-04:00:35] [TRT] [I] [GpuLayer] 439 copy
+[08/10/2026-04:00:35] [TRT] [I] [MemUsageChange] Init cuBLAS/cuBLASLt: CPU +0, GPU +19, now: CPU 2385, GPU 3506 (MiB)
+[08/10/2026-04:00:35] [TRT] [I] [MemUsageChange] Init cuDNN: CPU +0, GPU +5, now: CPU 2385, GPU 3511 (MiB)
+[08/10/2026-04:00:37] [TRT] [I] Local timing cache in use. Profiling results in this builder pass will not be stored.
+[08/10/2026-04:03:41] [TRT] [I] Detected 1 inputs and 4 output network tensors.
+[08/10/2026-04:03:41] [TRT] [I] Total Host Persistent Memory: 141680
+[08/10/2026-04:03:41] [TRT] [I] Total Device Persistent Memory: 11021824
+[08/10/2026-04:03:41] [TRT] [I] Total Scratch Memory: 0
+[08/10/2026-04:03:41] [TRT] [I] [MemUsageStats] Peak memory usage of TRT CPU/GPU memory allocators: CPU 2 MiB, GPU 294 MiB
+[08/10/2026-04:03:41] [TRT] [I] [BlockAssignment] Algorithm ShiftNTopDown took 77.0974ms to assign 9 blocks to 134 nodes requiring 3563522 bytes.
+[08/10/2026-04:03:41] [TRT] [I] Total Activation Memory: 3563522
+[08/10/2026-04:03:42] [TRT] [I] [MemUsageChange] Init cuBLAS/cuBLASLt: CPU +0, GPU +18, now: CPU 2402, GPU 3652 (MiB)
+[08/10/2026-04:03:42] [TRT] [I] [MemUsageChange] Init cuDNN: CPU +1, GPU +4, now: CPU 2403, GPU 3656 (MiB)
+[08/10/2026-04:03:43] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in building engine: CPU +0, GPU +16, now: CPU 0, GPU 16 (MiB)
+[34m[1mTensorRT:[0m export success ✅ 226.1s, saved as /home/astro/astro-drone/YOLO_MODEL/prototype.engine (11.6 MB)
+
+[34m[1mONNX:[0m starting export with onnx 1.11.0...
+[34m[1mONNX:[0m simplifier failure: No module named 'onnxsim'
+[34m[1mONNX:[0m export success ✅ 10.9s, saved as /home/astro/astro-drone/YOLO_MODEL/prototype.onnx (6.8 MB)
+
+Export complete (280.3s)
+Results saved to [1m/home/astro/astro-drone/YOLO_MODEL[0m
+Detect:          python detect.py --weights /home/astro/astro-drone/YOLO_MODEL/prototype.onnx 
+Validate:        python val.py --weights /home/astro/astro-drone/YOLO_MODEL/prototype.onnx 
+PyTorch Hub:     model = torch.hub.load('ultralytics/yolov5', 'custom', '/home/astro/astro-drone/YOLO_MODEL/prototype.onnx')  
+Visualize:       https://netron.app
+WARNING ⚠️ Python 3.7.0 is required by YOLOv5, but Python 3.6.9 is currently installed
+WARNING ⚠️ Python 3.7.0 is required by YOLOv5, but Python 3.6.9 is currently installed
+WARNING ⚠️ Python 3.7.0 is required by YOLOv5, but Python 3.6.9 is currently installed
+WARNING ⚠️ Python 3.7.0 is required by YOLOv5, but Python 3.6.9 is currently installed
