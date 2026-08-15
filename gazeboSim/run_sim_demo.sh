@@ -226,8 +226,46 @@ for i in $(seq 1 15); do
   sleep 1
 done
 if [ -n "$IMG_TOPIC" ]; then
-  gz topic -t "${IMG_TOPIC}/enable_streaming" -m gz.msgs.Boolean -p "data: true" >/dev/null 2>&1
-  info "[OK] $IMG_TOPIC"
+  # gz topic -p 는 한 번 쏘고 즉시 종료한다. gz-transport 는 발행자가 구독자를
+  # 발견하는 데 시간이 걸리므로, 발견 전에 프로세스가 죽으면 메시지가 그냥
+  # 사라진다. 2026-08-15 12:22 실행에서 실제로 이렇게 유실되어 프레임이 한 장도
+  # 안 왔고, 검출기는 176샘플 내내 found=false 였다. 그런데도 이 단계는 발행만
+  # 하고 [OK] 를 찍었다 — 검증이 없었던 것이 진짜 결함이다.
+  #
+  # 그래서 이제는 udp 5600 에 RTP 가 실제로 흐르는지 확인하고, 흐를 때까지
+  # 다시 발행한다. 검출기는 다음 단계에서 뜨므로 여기서 5600 을 잠깐 잡아도
+  # 충돌하지 않는다.
+  stream_alive() {
+    /usr/bin/python3 - <<'PY'
+import socket, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+try:
+    s.bind(("127.0.0.1", 5600))
+except OSError:
+    sys.exit(1)
+s.settimeout(2.0)
+try:
+    s.recvfrom(4096)
+except socket.timeout:
+    sys.exit(1)
+sys.exit(0)
+PY
+  }
+  ok_stream=0
+  for i in $(seq 1 6); do
+    gz topic -t "${IMG_TOPIC}/enable_streaming" -m gz.msgs.Boolean -p "data: true" >/dev/null 2>&1
+    sleep 1
+    if stream_alive; then ok_stream=1; break; fi
+  done
+  if [ "$ok_stream" = 1 ]; then
+    info "[OK] RTP 수신 확인 (${i}회 시도): $IMG_TOPIC"
+  else
+    echo "  [X] enable_streaming 을 6회 보냈지만 udp 5600 에 프레임이 없습니다."
+    echo "      이대로 진행하면 검출기가 아무것도 못 봅니다. ~/gazebo_run.log 의"
+    echo "      GstCameraPlugin 줄을 확인하세요."
+    exit 1
+  fi
 else
   echo "  [!] image 토픽 없음 — 카메라 없는 월드일 수 있습니다"
 fi
