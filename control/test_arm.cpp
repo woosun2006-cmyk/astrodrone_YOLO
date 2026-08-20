@@ -1,9 +1,14 @@
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <string>
 #include <thread>
+#include <unistd.h>
 
+#include "autopilot/command_sender.hpp"
+#include "autopilot/real_flight_guard.hpp"
+#include "autopilot/runtime_transport.hpp"
 #include "drone_lib.hpp"
 
 namespace {
@@ -52,7 +57,8 @@ std::unique_ptr<MavConnection> connect(const std::string& address, double timeou
     return master;
 }
 
-bool set_mode(MavConnection& master, const std::string& mode, double timeout) {
+bool set_mode(autopilot::CommandSender& commands, MavConnection& master,
+              const std::string& mode, double timeout) {
     const auto& mapping = copter_mode_mapping();
     auto it = mapping.find(mode);
     if (it == mapping.end()) {
@@ -61,10 +67,7 @@ bool set_mode(MavConnection& master, const std::string& mode, double timeout) {
     }
 
     std::cout << mode << " 모드 변경 명령 전송" << std::endl;
-    mavlink_message_t out;
-    mavlink_msg_set_mode_pack(255, 0, &out, master.target_system(),
-                               MAV_MODE_FLAG_CUSTOM_MODE_ENABLED, it->second);
-    master.send(out);
+    if (!commands.set_mode(mode)) return false;
 
     auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double>(timeout);
     while (std::chrono::steady_clock::now() < deadline) {
@@ -95,13 +98,9 @@ bool set_mode(MavConnection& master, const std::string& mode, double timeout) {
     return false;
 }
 
-void send_arm(MavConnection& master, bool should_arm) {
-    uint8_t value = should_arm ? 1 : 0;
+void send_arm(autopilot::CommandSender& commands, bool should_arm) {
     std::cout << (should_arm ? "ARM" : "DISARM") << " 명령 전송" << std::endl;
-    mavlink_message_t msg;
-    mavlink_msg_command_long_pack(255, 0, &msg, master.target_system(), master.target_component(),
-                                   ARM_COMMAND, 0, value, 0, 0, 0, 0, 0, 0);
-    master.send(msg);
+    commands.arm_disarm(should_arm);
 }
 
 struct ArmResult {
@@ -170,6 +169,12 @@ int run(int argc, char** argv) {
     double arm_timeout = 15;
     double hold = 3;
     bool keep_armed = false;
+    std::string target;
+    std::string router_serial;
+    bool allow_arm_flag = false;
+    bool confirm_real_flight = false;
+    bool commands_enabled_flag = false;
+    bool router_ownership_confirmed = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -179,6 +184,18 @@ int run(int argc, char** argv) {
         };
         if (arg == "--address") {
             address = next("--address");
+        } else if (arg == "--target") {
+            target = next("--target");
+        } else if (arg == "--router-serial") {
+            router_serial = next("--router-serial");
+        } else if (arg == "--allow-arm") {
+            allow_arm_flag = true;
+        } else if (arg == "--confirm-real-flight") {
+            confirm_real_flight = true;
+        } else if (arg == "--commands-enabled") {
+            commands_enabled_flag = true;
+        } else if (arg == "--router-owned") {
+            router_ownership_confirmed = true;
         } else if (arg == "--heartbeat-timeout") {
             heartbeat_timeout = std::stod(next("--heartbeat-timeout"));
         } else if (arg == "--mode") {
@@ -194,13 +211,52 @@ int run(int argc, char** argv) {
         }
     }
 
-    auto master = connect(address, heartbeat_timeout);
-
-    if (!no_mode) {
-        set_mode(*master, mode, 8);
+    if (!target.empty()) setenv("ASTRODRONE_TARGET", target.c_str(), 1);
+    const auto runtime_target = autopilot::runtime_target_from_environment();
+    const auto transport = autopilot::load_runtime_transport(
+        runtime_target, autopilot::TransportRole::CommandOwner);
+    if (runtime_target == autopilot::RuntimeTarget::Real) {
+        if (allow_arm_flag && confirm_real_flight && commands_enabled_flag &&
+            router_ownership_confirmed) {
+            setenv("ASTRODRONE_COMMAND_MODE", "flight", 1);
+            setenv("ASTRODRONE_ALLOW_MAVLINK_WRITES", "1", 1);
+            setenv("ASTRODRONE_ALLOW_VEHICLE_COMMANDS", "1", 1);
+            setenv("ASTRODRONE_ALLOW_ARM", "1", 1);
+            setenv("ASTRODRONE_COMMANDS_ENABLED", "1", 1);
+            setenv("ASTRODRONE_ROUTER_OWNERSHIP_CONFIRMED", "1", 1);
+            setenv("ASTRODRONE_ALLOW_TELEMETRY_CONFIGURATION", "1", 1);
+        }
+        const auto flight_config = autopilot::load_runtime_transport(
+            runtime_target, autopilot::TransportRole::CommandOwner);
+        autopilot::RealFlightOptions options;
+        options.router_serial = router_serial;
+        options.command_endpoint = flight_config.endpoint;
+        options.telemetry_endpoint = autopilot::load_runtime_transport(
+            runtime_target, autopilot::TransportRole::TelemetrySubscriber).endpoint;
+        options.allow_arm = allow_arm_flag;
+        options.confirm_real_flight = confirm_real_flight;
+        options.commands_enabled = commands_enabled_flag;
+        options.router_ownership_confirmed = router_ownership_confirmed;
+        if (router_serial.empty() || access(router_serial.c_str(), F_OK) != 0) {
+            throw std::runtime_error(
+                "test_arm real guard: router serial path must exist and be supplied explicitly");
+        }
+        const auto decision = autopilot::validate_real_flight(flight_config, options);
+        if (!decision.allowed) throw std::runtime_error("test_arm real guard: " + decision.reason);
+        address = flight_config.endpoint;
+    } else {
+        (void)transport;
     }
 
-    send_arm(*master, true);
+    auto master = connect(address, heartbeat_timeout);
+    autopilot::CommandGate command_gate;
+    autopilot::CommandSender commands(*master, command_gate);
+
+    if (!no_mode) {
+        set_mode(commands, *master, mode, 8);
+    }
+
+    send_arm(commands, true);
     ArmResult armed_result = wait_arm_result(*master, true, arm_timeout);
 
     if (armed_result.ok) {
@@ -223,7 +279,7 @@ int run(int argc, char** argv) {
         std::this_thread::sleep_for(std::chrono::duration<double>(hold));
     }
 
-    send_arm(*master, false);
+    send_arm(commands, false);
     ArmResult disarmed_result = wait_arm_result(*master, false, arm_timeout);
 
     if (disarmed_result.ok) {

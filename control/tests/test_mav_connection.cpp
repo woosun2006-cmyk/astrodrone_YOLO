@@ -118,12 +118,12 @@ bool wait_heartbeat_skips_non_autopilot_heartbeat() {
     auto transport = std::make_unique<FakeTransport>();
     transport->queue_incoming_message(
         heartbeat(7, MAV_COMP_ID_AUTOPILOT1, 0, MAV_TYPE_QUADROTOR, MAV_AUTOPILOT_INVALID));
-    transport->queue_incoming_message(heartbeat(2, MAV_COMP_ID_AUTOPILOT1, 6));
+    transport->queue_incoming_message(heartbeat(1, MAV_COMP_ID_AUTOPILOT1, 6));
     MavConnection connection(std::move(transport));
 
     mavlink_heartbeat_t decoded{};
     CHECK(connection.wait_heartbeat(0.1, &decoded));
-    CHECK(connection.target_system() == 2);
+    CHECK(connection.target_system() == 1);
     CHECK(connection.target_component() == MAV_COMP_ID_AUTOPILOT1);
     CHECK(decoded.custom_mode == 6);
     return true;
@@ -213,7 +213,7 @@ bool receives_coalesced_messages_without_byte_loss() {
     return true;
 }
 
-bool filter_discards_earlier_mismatch_and_preserves_later_message() {
+bool filter_preserves_earlier_and_later_mismatches() {
     mavlink_reset_channel_status(MAVLINK_COMM_0);
     auto transport = std::make_unique<FakeTransport>();
     std::vector<uint8_t> combined = encode_message(sys_status(1, 1, 15000));
@@ -231,6 +231,11 @@ bool filter_discards_earlier_mismatch_and_preserves_later_message() {
 
     mavlink_sys_status_t status{};
     mavlink_msg_sys_status_decode(&received, &status);
+    // The earlier SYS_STATUS was not requested by the first recv_match(),
+    // but it must remain queued for the next caller instead of being lost.
+    CHECK(status.voltage_battery == 15000);
+    CHECK(connection.recv_match({MAVLINK_MSG_ID_SYS_STATUS}, received, 0.01));
+    mavlink_msg_sys_status_decode(&received, &status);
     CHECK(status.voltage_battery == 16000);
     return true;
 }
@@ -238,7 +243,7 @@ bool filter_discards_earlier_mismatch_and_preserves_later_message() {
 bool reassembles_message_split_across_reads() {
     mavlink_reset_channel_status(MAVLINK_COMM_0);
     auto transport = std::make_unique<FakeTransport>();
-    const std::vector<uint8_t> bytes = encode_message(heartbeat(3, MAV_COMP_ID_AUTOPILOT1, 7));
+    const std::vector<uint8_t> bytes = encode_message(heartbeat(1, MAV_COMP_ID_AUTOPILOT1, 7));
     const std::size_t first_split = bytes.size() / 3;
     const std::size_t second_split = (bytes.size() * 2) / 3;
     transport->queue_incoming_bytes(
@@ -251,7 +256,7 @@ bool reassembles_message_split_across_reads() {
 
     mavlink_heartbeat_t decoded{};
     CHECK(connection.wait_heartbeat(0.1, &decoded));
-    CHECK(connection.target_system() == 3);
+    CHECK(connection.target_system() == 1);
     CHECK(connection.target_component() == MAV_COMP_ID_AUTOPILOT1);
     CHECK(decoded.custom_mode == 7);
     return true;
@@ -262,13 +267,13 @@ bool empty_read_does_not_hide_following_message() {
     auto transport = std::make_unique<FakeTransport>();
     FakeTransport* fake = transport.get();
     transport->queue_incoming_bytes({});
-    transport->queue_incoming_message(heartbeat(5, MAV_COMP_ID_AUTOPILOT1, 8));
+    transport->queue_incoming_message(heartbeat(1, MAV_COMP_ID_AUTOPILOT1, 8));
     MavConnection connection(std::move(transport));
 
     mavlink_heartbeat_t decoded{};
     CHECK(connection.wait_heartbeat(0.1, &decoded));
     CHECK(fake->read_call_count() >= 2);
-    CHECK(connection.target_system() == 5);
+    CHECK(connection.target_system() == 1);
     CHECK(connection.target_component() == MAV_COMP_ID_AUTOPILOT1);
     return true;
 }
@@ -313,13 +318,13 @@ bool malformed_and_incomplete_input_does_not_abort() {
     mavlink_reset_channel_status(MAVLINK_COMM_0);
     auto garbage_transport = std::make_unique<FakeTransport>();
     garbage_transport->queue_incoming_bytes({0x00, 0x7f, 0x55, 0xaa});
-    garbage_transport->queue_incoming_message(heartbeat(7, MAV_COMP_ID_AUTOPILOT1, 4));
+    garbage_transport->queue_incoming_message(heartbeat(1, MAV_COMP_ID_AUTOPILOT1, 4));
     MavConnection garbage_connection(std::move(garbage_transport));
 
     mavlink_message_t received{};
     CHECK(garbage_connection.recv_match({MAVLINK_MSG_ID_HEARTBEAT}, received, 0.1));
     CHECK(received.msgid == MAVLINK_MSG_ID_HEARTBEAT);
-    CHECK(garbage_connection.target_system() == 7);
+    CHECK(garbage_connection.target_system() == 1);
     CHECK(garbage_connection.target_component() == MAV_COMP_ID_AUTOPILOT1);
 
     mavlink_reset_channel_status(MAVLINK_COMM_0);
@@ -352,8 +357,8 @@ int main() {
         {"receives_multiple_messages_in_order", receives_multiple_messages_in_order},
         {"receives_coalesced_messages_without_byte_loss",
          receives_coalesced_messages_without_byte_loss},
-        {"filter_discards_earlier_mismatch_and_preserves_later_message",
-         filter_discards_earlier_mismatch_and_preserves_later_message},
+        {"filter_preserves_earlier_and_later_mismatches",
+         filter_preserves_earlier_and_later_mismatches},
         {"reassembles_message_split_across_reads", reassembles_message_split_across_reads},
         {"empty_read_does_not_hide_following_message", empty_read_does_not_hide_following_message},
         {"command_target_is_stable_after_other_component_message",

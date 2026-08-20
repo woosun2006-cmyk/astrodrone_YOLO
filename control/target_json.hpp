@@ -12,5 +12,6 @@ namespace target_json {
 // malformed values return std::nullopt.
 std::optional<bool> json_bool(const std::string& body, const std::string& key);
 std::optional<double> json_number(const std::string& body, const std::string& key);
+std::optional<std::string> json_string(const std::string& body, const std::string& key);
 
 }  // namespace target_json

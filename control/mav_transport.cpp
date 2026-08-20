@@ -175,6 +175,8 @@ public:
 
         int reuse = 1;
         setsockopt(fd_, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+        int receive_buffer = 1024 * 1024;
+        setsockopt(fd_, SOL_SOCKET, SO_RCVBUF, &receive_buffer, sizeof(receive_buffer));
 
         sockaddr_in addr{};
         addr.sin_family = AF_INET;

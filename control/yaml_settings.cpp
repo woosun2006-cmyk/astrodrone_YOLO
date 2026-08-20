@@ -1,6 +1,7 @@
 #include "yaml_settings.hpp"
 
 #include <fstream>
+#include <cstdlib>
 #include <limits.h>
 #include <stdexcept>
 #include <unistd.h>
@@ -25,6 +26,20 @@ long YamlValue::as_long() const { return std::stol(as_string()); }
 
 double YamlValue::as_double() const { return std::stod(as_string()); }
 
+bool YamlValue::as_bool() const {
+    const std::string value = as_string();
+    if (value == "true" || value == "1") return true;
+    if (value == "false" || value == "0") return false;
+    throw std::runtime_error("YAML value is not a boolean: " + value);
+}
+
+std::string YamlValue::get_string_or(const std::string& key,
+                                     const std::string& default_value) const {
+    auto it = children_.find(key);
+    if (it == children_.end()) return default_value;
+    return it->second.as_string();
+}
+
 long YamlValue::get_long_or(const std::string& key, long default_value) const {
     auto it = children_.find(key);
     if (it == children_.end()) return default_value;
@@ -35,6 +50,12 @@ double YamlValue::get_double_or(const std::string& key, double default_value) co
     auto it = children_.find(key);
     if (it == children_.end()) return default_value;
     return it->second.as_double();
+}
+
+bool YamlValue::get_bool_or(const std::string& key, bool default_value) const {
+    auto it = children_.find(key);
+    if (it == children_.end()) return default_value;
+    return it->second.as_bool();
 }
 
 namespace {
@@ -124,10 +145,13 @@ YamlValue load_setting_file(const std::string& filename) {
         exe_dir = ".";
     }
 
-    std::string candidates[] = {
-        exe_dir + "/../../setting/" + filename,  // build/<exe> layout
-        exe_dir + "/../setting/" + filename,      // control/<exe> layout
-    };
+    std::vector<std::string> candidates;
+    if (const char* override_dir = std::getenv("ASTRODRONE_SETTINGS_DIR");
+        override_dir != nullptr && *override_dir != '\0') {
+        candidates.emplace_back(std::string(override_dir) + "/" + filename);
+    }
+    candidates.push_back(exe_dir + "/../../setting/" + filename);  // build/<exe> layout
+    candidates.push_back(exe_dir + "/../setting/" + filename);     // control/<exe> layout
     for (const auto& candidate : candidates) {
         std::ifstream probe(candidate);
         if (probe.good()) {
@@ -146,6 +170,13 @@ YamlValue load_safety_settings() { return load_setting_file("safety.yaml"); }
 YamlValue load_port_settings() { return load_setting_file("port.yaml"); }
 
 YamlValue load_rate_settings() { return load_setting_file("rate.yaml"); }
+
+YamlValue load_runtime_settings(const std::string& target) {
+    if (target != "sitl" && target != "real") {
+        throw std::runtime_error("runtime target must be sitl or real");
+    }
+    return load_setting_file("runtime." + target + ".yaml");
+}
 
 std::string with_port(const std::string& address, long port) {
     size_t sep = address.find_last_of(':');

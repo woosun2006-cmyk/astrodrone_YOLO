@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <string>
 #include <vector>
@@ -39,6 +40,7 @@ public:
 
 private:
     std::unique_ptr<Transport> transport_;
+    std::deque<mavlink_message_t> pending_messages_;
     uint8_t target_system_ = 0;
     uint8_t target_component_ = 0;
 };
@@ -52,6 +54,12 @@ const std::map<std::string, uint32_t>& copter_mode_mapping();
 
 bool is_armed_from_heartbeat(const mavlink_heartbeat_t& hb);
 
+// Only this fixed ArduPilot vehicle heartbeat is allowed to establish the
+// vehicle target or update vehicle state. Other HEARTBEAT frames remain
+// available to telemetry consumers but are not vehicle identity/state.
+bool is_valid_ardupilot_heartbeat(const mavlink_message_t& message,
+                                  mavlink_heartbeat_t* decoded = nullptr);
+
 namespace drone {
 
 YamlValue load_mavlink_settings();
@@ -63,6 +71,17 @@ YamlValue load_rate_settings();
 // connection, mirroring drone_lib.py's global `master`.
 MavConnection& connect(const std::string& address, double heartbeat_timeout = 20.0);
 MavConnection& require_connection();
+
+// Connection-explicit overloads used by autopilot::CommandSender. The
+// existing singleton overloads below remain source-compatible wrappers.
+bool set_mode(MavConnection& vehicle, const std::string& mode);
+void arm_disarm(MavConnection& vehicle, bool arm);
+void takeoff(MavConnection& vehicle, double altitude);
+void send_velocity(MavConnection& vehicle, double vx, double vy, double vz,
+                   double yaw_rate = 0.0);
+void send_velocity_body(MavConnection& vehicle, double vx, double vy, double vz,
+                        double yaw_rate = 0.0);
+void land(MavConnection& vehicle);
 
 bool set_mode(const std::string& mode);
 void arm_disarm(bool arm);

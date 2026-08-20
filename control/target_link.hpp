@@ -22,6 +22,30 @@ struct TargetRangeMsg {
     float altitude_m = 0;       // ALTITUDE.altitude_relative, m above home (same as check_alt.cpp)
     float ground_offset_m = 0;  // hypot(x_px, y_px) scaled by target_track.pixel_to_meter
     float distance_m = 0;       // hypot(ground_offset_m, altitude_m) - the Pythagorean combine
+    // Diagnostic fields appended after the original payload. The two local
+    // UDP peers are rebuilt together, so existing field offsets are retained.
+    float normalized_x = 0;     // x_px / (frame_width / 2)
+    float normalized_y = 0;     // y_px / (frame_height / 2)
+    float body_forward_m = 0;   // +body-forward ground offset
+    float body_right_m = 0;     // +body-right ground offset
+    float observation_age_ms = -1;  // YOLO /target age; -1 means unavailable
+    float theta_forward_rad = 0;  // signed bearing, +body-forward
+    float theta_right_rad = 0;    // signed bearing, +body-right
+    // Additive vision metadata for the onboard-to-GCS telemetry publisher.
+    // These fields remain local to the two Repo A processes and are appended
+    // so the existing range/guidance fields keep their offsets.
+    float bbox_x_px = 0;
+    float bbox_y_px = 0;
+    float bbox_width_px = 0;
+    float bbox_height_px = 0;
+    float target_confidence = -1;
+    uint8_t confirmed = 0;  // YOLO confirmation state, additive metadata
+    uint64_t frame_sequence = 0;
+    int64_t frame_timestamp_ns = -1;
+    char class_name[32] = {};
+    char source[96] = {};
+    uint32_t frame_width = 640;
+    uint32_t frame_height = 480;
 };
 
 // Sends TargetRangeMsg datagrams to 127.0.0.1:port. Fire-and-forget: a
@@ -52,6 +76,48 @@ public:
     // Returns true and fills `out` if at least one datagram arrived since
     // the last call. Never blocks.
     bool poll(TargetRangeMsg& out);
+
+private:
+    int fd_ = -1;
+};
+
+// Local, non-MAVLink command metadata. control publishes the setpoint it has
+// computed after CommandGate evaluation so the GCS telemetry publisher can
+// display it without opening the command endpoint or decoding control logs.
+struct GcsCommandStateMsg {
+    uint32_t seq = 0;
+    float vx = 0;
+    float vy = 0;
+    float vz = 0;
+    float path_angle_rad = 0;
+    uint8_t allowed = 0;
+    char state[32] = {};
+    char safety_reason[96] = {};
+};
+
+class GcsCommandStateSender {
+public:
+    explicit GcsCommandStateSender(int port);
+    ~GcsCommandStateSender();
+    GcsCommandStateSender(const GcsCommandStateSender&) = delete;
+    GcsCommandStateSender& operator=(const GcsCommandStateSender&) = delete;
+
+    void send(float vx, float vy, float vz, float path_angle_rad, bool allowed,
+              const char* state, const char* safety_reason);
+
+private:
+    int fd_ = -1;
+    uint32_t seq_ = 0;
+};
+
+class GcsCommandStateReceiver {
+public:
+    explicit GcsCommandStateReceiver(int port);
+    ~GcsCommandStateReceiver();
+    GcsCommandStateReceiver(const GcsCommandStateReceiver&) = delete;
+    GcsCommandStateReceiver& operator=(const GcsCommandStateReceiver&) = delete;
+
+    bool poll(GcsCommandStateMsg& out);
 
 private:
     int fd_ = -1;

@@ -2,6 +2,7 @@
 #include "../control.cpp"
 #undef main
 
+#include "../autopilot/command_sender.hpp"
 #include "fake_transport.hpp"
 
 #include <cmath>
@@ -13,11 +14,12 @@
 
 namespace {
 
-constexpr uint8_t kTargetSystem = 23;
+constexpr uint8_t kTargetSystem = 1;
 constexpr uint8_t kTargetComponent = MAV_COMP_ID_AUTOPILOT1;
 constexpr uint8_t kSourceSystem = 255;
 constexpr uint8_t kSourceComponent = 0;
-constexpr uint16_t kCurrentVelocityTypeMask = 0b0000111111000111;
+// Velocity and yaw_rate are active; position, acceleration and yaw are ignored.
+constexpr uint16_t kCurrentVelocityTypeMask = 0b0000011111000111;
 
 FakeTransport* g_opened_transport = nullptr;
 
@@ -197,6 +199,124 @@ bool control_message_interval_keeps_current_fields() {
     return true;
 }
 
+bool command_sender_keeps_existing_packet_order() {
+    mavlink_reset_channel_status(MAVLINK_COMM_0);
+    MavConnection& connection = drone::connect("fake://command-sender", 0.1);
+    CHECK(g_opened_transport != nullptr);
+    g_opened_transport->clear_written();
+
+    autopilot::CommandGate gate;
+    autopilot::CommandSender sender(connection, gate);
+    CHECK(sender.set_mode("GUIDED"));
+    CHECK(sender.arm_disarm(true));
+    CHECK(sender.takeoff(6.5));
+    CHECK(sender.send_velocity(1.25, -2.5, 0.75, -0.2));
+    CHECK(sender.send_velocity_body(-1.5, 2.25, -0.5, 0.3));
+    CHECK(sender.send_zero_velocity());
+    CHECK(sender.land());
+    CHECK(sender.arm_disarm(false));
+
+    const std::vector<mavlink_message_t> messages =
+        g_opened_transport->decode_written_messages();
+    CHECK(messages.size() == 8);
+    CHECK(messages[0].msgid == MAVLINK_MSG_ID_SET_MODE);
+    CHECK(messages[1].msgid == MAVLINK_MSG_ID_COMMAND_LONG);
+    CHECK(messages[2].msgid == MAVLINK_MSG_ID_COMMAND_LONG);
+    CHECK(messages[3].msgid == MAVLINK_MSG_ID_SET_POSITION_TARGET_LOCAL_NED);
+    CHECK(messages[4].msgid == MAVLINK_MSG_ID_SET_POSITION_TARGET_LOCAL_NED);
+    CHECK(messages[5].msgid == MAVLINK_MSG_ID_SET_POSITION_TARGET_LOCAL_NED);
+    CHECK(messages[6].msgid == MAVLINK_MSG_ID_COMMAND_LONG);
+    CHECK(messages[7].msgid == MAVLINK_MSG_ID_COMMAND_LONG);
+
+    mavlink_set_position_target_local_ned_t local_velocity{};
+    mavlink_msg_set_position_target_local_ned_decode(&messages[3], &local_velocity);
+    CHECK(local_velocity.coordinate_frame == MAV_FRAME_LOCAL_NED);
+    CHECK(local_velocity.type_mask == kCurrentVelocityTypeMask);
+    CHECK(near(local_velocity.vx, 1.25F));
+    CHECK(near(local_velocity.vy, -2.5F));
+    CHECK(near(local_velocity.vz, 0.75F));
+    CHECK(near(local_velocity.yaw_rate, -0.2F));
+
+    mavlink_set_position_target_local_ned_t body_velocity{};
+    mavlink_msg_set_position_target_local_ned_decode(&messages[4], &body_velocity);
+    CHECK(body_velocity.coordinate_frame == MAV_FRAME_BODY_OFFSET_NED);
+    CHECK(body_velocity.type_mask == kCurrentVelocityTypeMask);
+    CHECK(near(body_velocity.vx, -1.5F));
+    CHECK(near(body_velocity.vy, 2.25F));
+    CHECK(near(body_velocity.vz, -0.5F));
+    CHECK(near(body_velocity.yaw_rate, 0.3F));
+
+    mavlink_set_position_target_local_ned_t zero_velocity{};
+    mavlink_msg_set_position_target_local_ned_decode(&messages[5], &zero_velocity);
+    CHECK(zero_velocity.coordinate_frame == MAV_FRAME_BODY_OFFSET_NED);
+    CHECK(zero_velocity.type_mask == kCurrentVelocityTypeMask);
+    CHECK(near(zero_velocity.vx, 0.0F));
+    CHECK(near(zero_velocity.vy, 0.0F));
+    CHECK(near(zero_velocity.vz, 0.0F));
+    CHECK(near(zero_velocity.yaw_rate, 0.0F));
+    return true;
+}
+
+bool locked_authority_blocks_every_vehicle_command() {
+    mavlink_reset_channel_status(MAVLINK_COMM_0);
+    MavConnection& connection = drone::connect("fake://locked-command-sender", 0.1);
+    CHECK(g_opened_transport != nullptr);
+    g_opened_transport->clear_written();
+
+    std::vector<autopilot::CommandDecision> decisions;
+    autopilot::CommandGate gate;
+    gate.set_control_locked(true);
+    autopilot::CommandSender sender(
+        connection, gate,
+        [&](const autopilot::CommandDecision& decision) { decisions.push_back(decision); });
+
+    const auto mode = sender.set_mode("GUIDED");
+    const auto arm = sender.arm_disarm(true);
+    const auto takeoff = sender.takeoff(5.0);
+    const auto velocity = sender.send_velocity_body(1.0, 0.0, 0.0, 0.0);
+    const auto zero = sender.send_zero_velocity();
+    const auto land = sender.land();
+
+    for (const auto& decision : {mode, arm, takeoff, velocity, zero, land}) {
+        CHECK(!decision.allowed);
+        CHECK(!decision.sent);
+        CHECK(decision.block_reason == autopilot::GateBlockReason::ControlLocked);
+    }
+    CHECK(g_opened_transport->write_call_count() == 0);
+    CHECK(decisions.size() == 6);
+    CHECK(decisions[4].type == autopilot::CommandType::VelocitySetpoint);
+    CHECK(decisions[5].type == autopilot::CommandType::Land);
+    return true;
+}
+
+bool authority_change_and_expiry_are_checked_before_send() {
+    mavlink_reset_channel_status(MAVLINK_COMM_0);
+    MavConnection& connection = drone::connect("fake://authority-change", 0.1);
+    CHECK(g_opened_transport != nullptr);
+    g_opened_transport->clear_written();
+
+    autopilot::CommandGate gate;
+    autopilot::CommandSender sender(connection, gate);
+    CHECK(sender.set_mode("GUIDED"));
+    CHECK(g_opened_transport->write_call_count() == 1);
+
+    gate.set_control_locked(true);
+    const auto changed = sender.land();
+    CHECK(!changed.allowed);
+    CHECK(changed.block_reason == autopilot::GateBlockReason::ControlLocked);
+    CHECK(g_opened_transport->write_call_count() == 1);
+
+    gate.set_control_locked(false);
+    const auto now = autopilot::CommandRequest::Clock::now();
+    const auto expired = autopilot::CommandRequest::zero_velocity(
+        now - std::chrono::seconds(2), now - std::chrono::milliseconds(1));
+    const auto stale = sender.send(expired);
+    CHECK(!stale.allowed);
+    CHECK(stale.block_reason == autopilot::GateBlockReason::RequestExpired);
+    CHECK(g_opened_transport->write_call_count() == 1);
+    return true;
+}
+
 }  // namespace
 
 std::unique_ptr<Transport> open_transport(const std::string& address, int baud) {
@@ -214,6 +334,12 @@ int main() {
          production_flight_commands_keep_current_fields_and_order},
         {"control_message_interval_keeps_current_fields",
          control_message_interval_keeps_current_fields},
+        {"command_sender_keeps_existing_packet_order",
+         command_sender_keeps_existing_packet_order},
+        {"locked_authority_blocks_every_vehicle_command",
+         locked_authority_blocks_every_vehicle_command},
+        {"authority_change_and_expiry_are_checked_before_send",
+         authority_change_and_expiry_are_checked_before_send},
     };
 
     int failed = 0;

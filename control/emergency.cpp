@@ -15,6 +15,7 @@
 // is just a convenient way for a human to watch vehicle health in a
 // terminal, independent of a flight.
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <iomanip>
 #include <iostream>
@@ -23,6 +24,7 @@
 #include <vector>
 
 #include "drone_lib.hpp"
+#include "autopilot/runtime_transport.hpp"
 
 namespace {
 
@@ -79,6 +81,7 @@ int run(int argc, char** argv) {
     args.address = with_port(mav_settings["real"]["proxy_udp"]["address"].as_string(),
                               ports.get_long_or("mavlink_sensor", 14551));
     args.heartbeat_timeout = mav_settings.get_double_or("heartbeat_timeout", 20);
+    bool allow_telemetry_configuration = true;
 
     try {
         YamlValue safety = drone::load_safety_settings();
@@ -128,6 +131,21 @@ int run(int argc, char** argv) {
         }
     }
 
+    const bool runtime_selected = std::getenv("ASTRODRONE_TARGET") != nullptr ||
+                                  std::getenv("DRONE_TARGET") != nullptr;
+    if (runtime_selected) {
+        const auto target = autopilot::runtime_target_from_environment();
+        const auto runtime = autopilot::load_runtime_transport(
+            target, autopilot::TransportRole::TelemetrySubscriber);
+        args.address = runtime.endpoint;
+        args.baud = runtime.baud;
+        allow_telemetry_configuration = runtime.allow_telemetry_configuration;
+    }
+    if (!runtime_selected || autopilot::endpoint_is_serial(args.address)) {
+        throw std::runtime_error(
+            "diagnostic requires ASTRODRONE_TARGET=sitl|real and a runtime loopback UDP endpoint; direct serial is disabled");
+    }
+
     // Read-only connection: this program never sends MAVLink commands, so
     // it doesn't need drone::connect()'s command-sending singleton - same
     // posture as check_alt.cpp.
@@ -140,9 +158,11 @@ int run(int argc, char** argv) {
     std::cout << "Connected to MAVLink system " << static_cast<int>(connection->target_system())
               << "." << std::endl;
 
-    request_message_interval(*connection, MAVLINK_MSG_ID_SYS_STATUS, args.poll_rate_hz);
-    request_message_interval(*connection, MAVLINK_MSG_ID_GPS_RAW_INT, args.poll_rate_hz);
-    request_message_interval(*connection, MAVLINK_MSG_ID_EKF_STATUS_REPORT, args.poll_rate_hz);
+    if (allow_telemetry_configuration) {
+        request_message_interval(*connection, MAVLINK_MSG_ID_SYS_STATUS, args.poll_rate_hz);
+        request_message_interval(*connection, MAVLINK_MSG_ID_GPS_RAW_INT, args.poll_rate_hz);
+        request_message_interval(*connection, MAVLINK_MSG_ID_EKF_STATUS_REPORT, args.poll_rate_hz);
+    }
     // HEARTBEAT is broadcast on its own (~1 Hz) without needing a request.
 
     std::cout << "Health watch (read-only, diagnostic only - see top-of-file note): battery>="
@@ -192,7 +212,10 @@ int run(int argc, char** argv) {
                     mavlink_sys_status_t s;
                     mavlink_msg_sys_status_decode(&msg, &s);
                     battery_percent = s.battery_remaining;
-                    battery_voltage_v = s.voltage_battery == 65535 ? -1 : s.voltage_battery / 1000.0;
+                    battery_voltage_v =
+                        (s.voltage_battery == 0 || s.voltage_battery == 65535)
+                            ? -1
+                            : s.voltage_battery / 1000.0;
                     prearm_healthy = (s.onboard_control_sensors_health & MAV_SYS_STATUS_PREARM_CHECK) != 0;
                     have_battery = true;
                     have_sys_status = true;

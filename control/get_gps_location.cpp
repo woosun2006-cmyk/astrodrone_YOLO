@@ -1,5 +1,6 @@
 // Print the vehicle GPS location received from a Pixhawk over MAVLink.
 #include <cmath>
+#include <cstdlib>
 #include <ctime>
 #include <iomanip>
 #include <iostream>
@@ -8,6 +9,7 @@
 #include <string>
 
 #include "drone_lib.hpp"
+#include "autopilot/runtime_transport.hpp"
 
 namespace {
 
@@ -60,6 +62,7 @@ int run(int argc, char** argv) {
     args.address = serial["address"].as_string();
     args.baud = static_cast<int>(serial["baud"].as_long());
     args.heartbeat_timeout = settings.get_double_or("heartbeat_timeout", 20);
+    bool allow_telemetry_configuration = true;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -80,6 +83,21 @@ int run(int argc, char** argv) {
         } else if (arg == "--once") {
             args.once = true;
         }
+    }
+
+    const bool runtime_selected = std::getenv("ASTRODRONE_TARGET") != nullptr ||
+                                  std::getenv("DRONE_TARGET") != nullptr;
+    if (runtime_selected) {
+        const auto target = autopilot::runtime_target_from_environment();
+        const auto runtime = autopilot::load_runtime_transport(
+            target, autopilot::TransportRole::TelemetrySubscriber);
+        args.address = runtime.endpoint;
+        args.baud = runtime.baud;
+        allow_telemetry_configuration = runtime.allow_telemetry_configuration;
+    }
+    if (!runtime_selected || autopilot::endpoint_is_serial(args.address)) {
+        throw std::runtime_error(
+            "diagnostic requires ASTRODRONE_TARGET=sitl|real and a runtime loopback UDP endpoint; direct serial is disabled");
     }
 
     if (!std::isfinite(args.rate) || args.rate <= 0) {
@@ -104,7 +122,9 @@ int run(int argc, char** argv) {
     std::cout << "Connected to MAVLink system " << static_cast<int>(connection->target_system())
               << ", component " << static_cast<int>(connection->target_component()) << "."
               << std::endl;
-    request_message_interval(*connection, MAVLINK_MSG_ID_GPS_RAW_INT, args.rate);
+    if (allow_telemetry_configuration) {
+        request_message_interval(*connection, MAVLINK_MSG_ID_GPS_RAW_INT, args.rate);
+    }
 
     while (true) {
         mavlink_message_t msg;

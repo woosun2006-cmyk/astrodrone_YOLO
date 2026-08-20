@@ -149,6 +149,31 @@ bool is_json_number(std::string_view token) {
     return pos == token.size();
 }
 
+std::optional<std::string> decode_json_string(std::string_view token) {
+    if (token.size() < 2 || token.front() != '"' || token.back() != '"') return std::nullopt;
+    std::string value;
+    value.reserve(token.size() - 2);
+    for (size_t i = 1; i + 1 < token.size(); ++i) {
+        if (token[i] != '\\') {
+            value.push_back(token[i]);
+            continue;
+        }
+        if (++i + 1 >= token.size()) return std::nullopt;
+        switch (token[i]) {
+            case '"': value.push_back('"'); break;
+            case '\\': value.push_back('\\'); break;
+            case '/': value.push_back('/'); break;
+            case 'b': value.push_back('\b'); break;
+            case 'f': value.push_back('\f'); break;
+            case 'n': value.push_back('\n'); break;
+            case 'r': value.push_back('\r'); break;
+            case 't': value.push_back('\t'); break;
+            default: return std::nullopt;
+        }
+    }
+    return value;
+}
+
 }  // namespace
 
 std::optional<bool> json_bool(const std::string& body, const std::string& key) {
@@ -169,6 +194,12 @@ std::optional<double> json_number(const std::string& body, const std::string& ke
     } catch (...) {
         return std::nullopt;
     }
+}
+
+std::optional<std::string> json_string(const std::string& body, const std::string& key) {
+    auto token = find_top_level_value(body, key);
+    if (!token) return std::nullopt;
+    return decode_json_string(*token);
 }
 
 }  // namespace target_json

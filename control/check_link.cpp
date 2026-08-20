@@ -1,11 +1,13 @@
 // Read-only MAVLink link/status check. Sends no arm or motor commands.
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <iomanip>
 #include <iostream>
 #include <string>
 
 #include "drone_lib.hpp"
+#include "autopilot/runtime_transport.hpp"
 
 namespace {
 
@@ -46,6 +48,20 @@ int run(int argc, char** argv) {
         } else if (arg == "--listen") {
             listen_sec = std::stod(next("--listen"));
         }
+    }
+
+    const bool runtime_selected = std::getenv("ASTRODRONE_TARGET") != nullptr ||
+                                  std::getenv("DRONE_TARGET") != nullptr;
+    if (runtime_selected) {
+        const auto target = autopilot::runtime_target_from_environment();
+        const auto runtime = autopilot::load_runtime_transport(
+            target, autopilot::TransportRole::TelemetrySubscriber);
+        address = runtime.endpoint;
+        baud = runtime.baud;
+    }
+    if (!runtime_selected || autopilot::endpoint_is_serial(address)) {
+        throw std::runtime_error(
+            "diagnostic requires ASTRODRONE_TARGET=sitl|real and a runtime loopback UDP endpoint; direct serial is disabled");
     }
 
     auto master = open_connection(address, baud);

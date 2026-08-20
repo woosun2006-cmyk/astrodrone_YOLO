@@ -14,11 +14,20 @@ add_compile_options(-Wall -Wextra)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
 add_library(drone_lib STATIC
+    autopilot/runtime_transport.cpp
+    autopilot/real_flight_guard.cpp
     drone_lib.cpp
+    logging/command_audit_logger.cpp
     mav_transport.cpp
+    safety/control_authority.cpp
+    safety/flight_state.cpp
+    safety/health_monitor.cpp
+    safety/preflight_gate.cpp
     yaml_settings.cpp
     target_link.cpp
     pos_calculator.cpp
+    mission/pixel_guidance.cpp
+    mission/diagonal_approach_guidance.cpp
 )
 target_include_directories(drone_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 

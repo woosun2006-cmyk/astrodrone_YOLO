@@ -10,11 +10,13 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <string>
 
 #include "drone_lib.hpp"
+#include "autopilot/runtime_transport.hpp"
 
 namespace {
 
@@ -68,6 +70,7 @@ int run(int argc, char** argv) {
     args.address = serial["address"].as_string();
     args.baud = static_cast<int>(serial["baud"].as_long());
     args.heartbeat_timeout = settings.get_double_or("heartbeat_timeout", 20);
+    bool allow_telemetry_configuration = true;
 
     try {
         YamlValue alt_limit = drone::load_safety_settings()["altitude_limit"];
@@ -104,6 +107,21 @@ int run(int argc, char** argv) {
         }
     }
 
+    const bool runtime_selected = std::getenv("ASTRODRONE_TARGET") != nullptr ||
+                                  std::getenv("DRONE_TARGET") != nullptr;
+    if (runtime_selected) {
+        const auto target = autopilot::runtime_target_from_environment();
+        const auto runtime = autopilot::load_runtime_transport(
+            target, autopilot::TransportRole::TelemetrySubscriber);
+        args.address = runtime.endpoint;
+        args.baud = runtime.baud;
+        allow_telemetry_configuration = runtime.allow_telemetry_configuration;
+    }
+    if (!runtime_selected || autopilot::endpoint_is_serial(args.address)) {
+        throw std::runtime_error(
+            "diagnostic requires ASTRODRONE_TARGET=sitl|real and a runtime loopback UDP endpoint; direct serial is disabled");
+    }
+
     if (!std::isfinite(args.rate) || args.rate <= 0) {
         std::cerr << "--rate must be greater than zero" << std::endl;
         return 2;
@@ -126,7 +144,9 @@ int run(int argc, char** argv) {
               << ", component " << static_cast<int>(connection->target_component()) << "."
               << std::endl;
 
-    request_message_interval(*connection, MAVLINK_MSG_ID_ALTITUDE, args.rate);
+    if (allow_telemetry_configuration) {
+        request_message_interval(*connection, MAVLINK_MSG_ID_ALTITUDE, args.rate);
+    }
 
     bool have_target = std::isfinite(args.target);
     double target = args.target;

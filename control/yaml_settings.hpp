@@ -12,9 +12,12 @@ public:
     std::string as_string() const;
     long as_long() const;
     double as_double() const;
+    bool as_bool() const;
 
+    std::string get_string_or(const std::string& key, const std::string& default_value) const;
     long get_long_or(const std::string& key, long default_value) const;
     double get_double_or(const std::string& key, double default_value) const;
+    bool get_bool_or(const std::string& key, bool default_value) const;
 
 private:
     bool is_scalar_ = false;
@@ -43,6 +46,10 @@ YamlValue load_port_settings();
 // polling-rate values shared with YOLO_MODEL/yolo_live.py) -- same
 // executable-relative lookup as load_mavlink_settings().
 YamlValue load_rate_settings();
+
+// Resolves setting/runtime.<target>.yaml. Runtime files contain only the
+// target-specific transport and camera policy; flight logic remains in code.
+YamlValue load_runtime_settings(const std::string& target);
 
 // Replaces the ":<port>" suffix of a "udp:host:port" / "tcp:host:port"
 // address with a different port, keeping the scheme and host as-is.
