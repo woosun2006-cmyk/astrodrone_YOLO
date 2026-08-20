@@ -9,6 +9,7 @@
 #include <climits>
 #include <csignal>
 #include <cstring>
+#include <cstdlib>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -25,6 +26,7 @@
 #include <future>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <sstream>
@@ -35,10 +37,17 @@
 #include <opencv2/opencv.hpp>
 
 #include "http_server.hpp"
+#include "frame_source.hpp"
+#include "gcs_video_publisher.hpp"
 #include "report.hpp"
 #include "sysinfo.hpp"
 #include "trt_engine.hpp"
 #include "yaml_settings.hpp"
+
+#ifdef ASTRODRONE_HAVE_GZ_FRAME_SOURCE
+#include <gz/msgs/image.pb.h>
+#include <gz/transport/Node.hh>
+#endif
 
 namespace {
 
@@ -62,9 +71,7 @@ constexpr bool FP16 = false;
 
 constexpr int TARGET_CONFIRM_FRAMES = 5;
 
-constexpr int SENSOR_ID = 0;
-constexpr int WIDTH = 640, HEIGHT = 480, CAM_FPS = 30;
-constexpr int WBMODE = 3;
+constexpr int WIDTH = 640, HEIGHT = 480;
 // ---------------------------------------------------------------------------
 
 std::atomic<bool> g_stopping{false};
@@ -194,12 +201,19 @@ struct TargetInfo {
     double conf = 0.0, x_px = 0.0, y_px = 0.0;
     int detections = 0;
     bool multi = false;
+    std::string source;
+    std::uint64_t frame_sequence = 0;
+    std::int64_t frame_timestamp_ns = -1;
+    double bbox_x_px = 0.0, bbox_y_px = 0.0;
+    double bbox_width_px = 0.0, bbox_height_px = 0.0;
+    std::uint32_t frame_width = WIDTH, frame_height = HEIGHT;
 };
 
 struct SharedState {
     std::mutex cap_mutex;
     std::condition_variable cap_cv;
     cv::Mat raw_frame;
+    FrameMetadata raw_metadata;
     uint64_t raw_frame_gen = 0;
     std::deque<double> cap_times;
     uint64_t cap_count = 0;
@@ -213,6 +227,45 @@ struct SharedState {
     double last_latency_ms = 0.0;
     TargetInfo target;
 };
+
+#ifdef ASTRODRONE_HAVE_GZ_FRAME_SOURCE
+// Mirrors Repo B's GazeboImagePublisher. The world owns an ImageDisplay
+// Optional local debug publisher. It is only created when
+// GCS_VIDEO_ANNOTATED=1; the normal GCS video path is raw.
+class GazeboAnnotatedPublisher {
+public:
+    GazeboAnnotatedPublisher() {
+        publisher_ = node_.Advertise<gz::msgs::Image>("/yolo/annotated");
+        if (!publisher_) {
+            throw std::runtime_error("could not advertise Gazebo topic: /yolo/annotated");
+        }
+    }
+
+    void publish(const cv::Mat& bgr) {
+        if (bgr.empty() || bgr.type() != CV_8UC3) return;
+
+        cv::Mat rgb;
+        cv::cvtColor(bgr, rgb, cv::COLOR_BGR2RGB);
+
+        gz::msgs::Image message;
+        message.set_width(static_cast<std::uint32_t>(rgb.cols));
+        message.set_height(static_cast<std::uint32_t>(rgb.rows));
+        message.set_step(static_cast<std::uint32_t>(rgb.step));
+        message.set_pixel_format_type(gz::msgs::RGB_INT8);
+        message.set_data(rgb.data, rgb.total() * rgb.elemSize());
+        publisher_.Publish(message);
+    }
+
+private:
+    gz::transport::Node node_;
+    gz::transport::Node::Publisher publisher_;
+};
+#else
+class GazeboAnnotatedPublisher {
+public:
+    void publish(const cv::Mat&) {}
+};
+#endif
 
 struct ConfState {
     std::mutex mutex;
@@ -341,54 +394,53 @@ void draw_detections(cv::Mat& img, const std::vector<Detection>& dets, const std
 // threads - grabber() / inferer() / sampler(), mirrors yolo_live.py
 // ---------------------------------------------------------------------------
 
-void grabber(SharedState& state, cv::Vec3f wb_gains_bgr) {
-    std::ostringstream p;
-    p << "nvarguscamerasrc sensor-id=" << SENSOR_ID << " wbmode=" << WBMODE << " ! "
-      << "video/x-raw(memory:NVMM),width=" << WIDTH << ",height=" << HEIGHT << ",format=NV12,framerate=" << CAM_FPS
-      << "/1 ! "
-      << "nvvidconv flip-method=0 ! "
-      << "video/x-raw,width=" << WIDTH << ",height=" << HEIGHT << ",format=BGRx ! "
-      << "videoconvert ! video/x-raw,format=BGR ! appsink drop=1";
-    std::string pipeline = p.str();
-
+void grabber(SharedState& state, cv::Vec3f wb_gains_bgr, FrameSource& source) {
     while (!g_stopping.load()) {
-        cv::VideoCapture cap(pipeline, cv::CAP_GSTREAMER);
-        if (!cap.isOpened()) {
-            std::this_thread::sleep_for(std::chrono::seconds(3));
-            continue;
-        }
-        while (!g_stopping.load()) {
-            cv::Mat frame;
-            if (!cap.read(frame)) break;
+        cv::Mat frame;
+        FrameMetadata metadata;
+        std::string error;
+        if (source.read(frame, metadata, error)) {
             apply_wb_correction(frame, wb_gains_bgr);
             double now = monotonic_seconds();
             {
                 std::lock_guard<std::mutex> lock(state.cap_mutex);
                 state.raw_frame = frame;
+                state.raw_metadata = metadata;
                 state.raw_frame_gen++;
                 push_capped(state.cap_times, now, static_cast<size_t>(30));
                 state.cap_count++;
             }
             state.cap_cv.notify_all();
+            continue;
         }
-        cap.release();
-        if (g_stopping.load()) return;
-        std::this_thread::sleep_for(std::chrono::seconds(3));
+        std::cerr << "[frame_source] " << error << std::endl;
+        // A transient Gazebo transport gap must not turn into an additional
+        // multi-second blind period. Keep retrying while the producer thread
+        // remains alive so target freshness, rather than this retry delay,
+        // determines when control stops using detections.
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 }
 
-void inferer(SharedState& state, YoloTrt& model, ConfState& conf_state, const std::vector<std::string>& class_names) {
+void inferer(SharedState& state, YoloTrt& model, ConfState& conf_state,
+             const std::vector<std::string>& class_names,
+             GazeboAnnotatedPublisher* gazebo_publisher,
+             GcsVideoPublisher* video_publisher) {
     uint64_t last_gen = 0;
     std::deque<std::optional<std::string>> streak;  // None-slot for "no/unstable detection this frame"
 
     while (!g_stopping.load()) {
         cv::Mat frame;
+        FrameMetadata metadata;
+        uint64_t frame_sequence = 0;
         {
             std::unique_lock<std::mutex> lock(state.cap_mutex);
             state.cap_cv.wait(lock, [&] { return state.raw_frame_gen != last_gen || g_stopping.load(); });
             if (g_stopping.load()) return;
             frame = state.raw_frame;
+            metadata = state.raw_metadata;
             last_gen = state.raw_frame_gen;
+            frame_sequence = last_gen;
         }
 
         double conf_thres;
@@ -401,10 +453,14 @@ void inferer(SharedState& state, YoloTrt& model, ConfState& conf_state, const st
         std::vector<Detection> dets = model.infer(frame, static_cast<float>(conf_thres), IOU_THRES);
         double latency_ms = (monotonic_seconds() - t0) * 1000.0;
 
-        cv::Mat annotated = frame.clone();
-        draw_detections(annotated, dets, class_names);
-        std::vector<uint8_t> jpg;
-        cv::imencode(".jpg", annotated, jpg, {cv::IMWRITE_JPEG_QUALITY, 85});
+        if (gazebo_publisher != nullptr) {
+            cv::Mat annotated = frame.clone();
+            draw_detections(annotated, dets, class_names);
+            gazebo_publisher->publish(annotated);
+        }
+        if (video_publisher != nullptr) {
+            video_publisher->submit(frame, frame_sequence, metadata.source_timestamp_ns);
+        }
 
         std::vector<DetSummary> det_summaries;
         det_summaries.reserve(dets.size());
@@ -419,6 +475,11 @@ void inferer(SharedState& state, YoloTrt& model, ConfState& conf_state, const st
         TargetInfo target;
         target.detections = static_cast<int>(dets.size());
         target.multi = multi;
+        target.source = metadata.source;
+        target.frame_sequence = frame_sequence;
+        target.frame_timestamp_ns = metadata.source_timestamp_ns;
+        target.frame_width = metadata.width != 0 ? metadata.width : static_cast<std::uint32_t>(frame.cols);
+        target.frame_height = metadata.height != 0 ? metadata.height : static_cast<std::uint32_t>(frame.rows);
         if (!dets.empty()) {
             const Detection* top = &dets[0];
             for (auto& d : dets) {
@@ -435,15 +496,17 @@ void inferer(SharedState& state, YoloTrt& model, ConfState& conf_state, const st
             // right, +y up - consumed by control/target_distance.cpp.
             double px = (top->x1 + top->x2) / 2.0;
             double py = (top->y1 + top->y2) / 2.0;
-            target.x_px = round_to(px - WIDTH / 2.0, 1);
-            target.y_px = round_to(HEIGHT / 2.0 - py, 1);
+            target.x_px = round_to(px - target.frame_width / 2.0, 1);
+            target.y_px = round_to(target.frame_height / 2.0 - py, 1);
+            target.bbox_x_px = top->x1;
+            target.bbox_y_px = top->y1;
+            target.bbox_width_px = top->x2 - top->x1;
+            target.bbox_height_px = top->y2 - top->y1;
         }
 
         double now = monotonic_seconds();
         {
             std::lock_guard<std::mutex> lock(state.frame_mutex);
-            state.jpg_frame.assign(jpg.begin(), jpg.end());
-            state.frame_gen++;
             push_capped(state.infer_times, now, static_cast<size_t>(30));
             state.last_dets = det_summaries;
             state.last_latency_ms = round_to(latency_ms, 1);
@@ -775,7 +838,7 @@ std::string hostname() {
 
 }  // namespace
 
-int run() {
+int run(int argc, char** argv) {
     std::signal(SIGINT, handle_signal);
     std::signal(SIGTERM, handle_signal);
 
@@ -785,6 +848,33 @@ int run() {
     std::string onnx_path = yolo_dir + "/prototype.onnx";
     std::string engine_path = yolo_dir + "/prototype.engine";
     std::string classes_path = yolo_dir + "/classes.txt";
+
+    if (const char* env = std::getenv("YOLO_ONNX"); env && *env) onnx_path = env;
+    if (const char* env = std::getenv("YOLO_ENGINE"); env && *env) engine_path = env;
+
+    std::string frame_source_name = "imx219";
+    std::string gazebo_topic;
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "--frame-source" && i + 1 < argc) frame_source_name = argv[++i];
+        else if (arg == "--gazebo-topic" && i + 1 < argc) gazebo_topic = argv[++i];
+        else if (arg == "--engine" && i + 1 < argc) engine_path = argv[++i];
+        else if (arg == "--onnx" && i + 1 < argc) onnx_path = argv[++i];
+        else throw std::runtime_error("usage: yolo_live [--frame-source imx219|jetson|gazebo] [--gazebo-topic /exact/topic] [--engine path] [--onnx path]");
+    }
+    std::unique_ptr<FrameSource> frame_source;
+    if (frame_source_name == "imx219" || frame_source_name == "jetson") {
+        if (!gazebo_topic.empty()) throw std::runtime_error("--gazebo-topic is only valid with --frame-source gazebo");
+        frame_source = make_jetson_camera_frame_source();
+    } else if (frame_source_name == "gazebo") {
+        if (gazebo_topic.empty()) throw std::runtime_error("--frame-source gazebo requires --gazebo-topic");
+        frame_source = make_gazebo_frame_source(gazebo_topic);
+    } else {
+        throw std::runtime_error("unknown --frame-source: " + frame_source_name);
+    }
+    std::cout << "frame_source=" << frame_source_name;
+    if (!gazebo_topic.empty()) std::cout << " topic=" << gazebo_topic;
+    std::cout << " engine=" << engine_path << std::endl;
 
     AppPaths paths;
     paths.log_dir = yolo_dir + "/log";
@@ -803,6 +893,34 @@ int run() {
     size_t hist_maxlen = static_cast<size_t>(LIVE_WINDOW_SEC / SAMPLE_INTERVAL_SEC) + 2;
     SysInfoReader sysinfo_reader;
 
+    const bool annotated_debug = [] {
+        const char* value = std::getenv("GCS_VIDEO_ANNOTATED");
+        return value != nullptr && std::string(value) == "1";
+    }();
+    std::unique_ptr<GazeboAnnotatedPublisher> gazebo_publisher;
+    if (frame_source_name == "gazebo" && annotated_debug) {
+        gazebo_publisher = std::make_unique<GazeboAnnotatedPublisher>();
+    }
+    std::unique_ptr<GcsVideoPublisher> video_publisher;
+    if (const char* enabled = std::getenv("GCS_VIDEO_ENABLED");
+        enabled != nullptr && std::string(enabled) == "1") {
+        GcsVideoPublisher::EncodedFrameCallback preview_callback;
+        if (const char* preview = std::getenv("GCS_LOCAL_PREVIEW");
+            preview != nullptr && std::string(preview) == "1") {
+            preview_callback = [&state](const std::vector<std::uint8_t>& jpeg,
+                                        std::uint64_t, std::int64_t) {
+                std::lock_guard<std::mutex> lock(state.frame_mutex);
+                state.jpg_frame = jpeg;
+                ++state.frame_gen;
+                state.frame_cv.notify_all();
+            };
+        }
+        video_publisher = std::make_unique<GcsVideoPublisher>(std::move(preview_callback));
+        std::cout << "gcs_video=enabled (async, bounded latest-frame queue)" << std::endl;
+    }
+    std::cout << "gcs_video_annotated=" << (annotated_debug ? "enabled" : "disabled")
+              << " (raw video is the default)" << std::endl;
+
     std::cout << "loading model..." << std::endl;
     std::promise<std::unique_ptr<YoloTrt>> model_promise;
     std::future<std::unique_ptr<YoloTrt>> model_future = model_promise.get_future();
@@ -814,7 +932,7 @@ int run() {
         }
     });
 
-    std::thread grab_thread(grabber, std::ref(state), wb_gains_bgr);
+    std::thread grab_thread(grabber, std::ref(state), wb_gains_bgr, std::ref(*frame_source));
 
     std::cout << "warming up camera..." << std::endl;
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(12);
@@ -855,7 +973,8 @@ int run() {
     int img_size = model->input_w();
     std::cout << "model loaded: " << py_list_repr(class_names) << std::endl;
 
-    std::thread infer_thread(inferer, std::ref(state), std::ref(*model), std::ref(conf_state), std::cref(class_names));
+    std::thread infer_thread(inferer, std::ref(state), std::ref(*model), std::ref(conf_state),
+                             std::cref(class_names), gazebo_publisher.get(), video_publisher.get());
     std::thread sampler_thread(sampler, std::ref(state), std::ref(conf_state), std::ref(sysinfo_reader),
                                 std::ref(history), std::ref(hist_mutex), hist_maxlen, std::ref(rec), std::cref(paths),
                                 std::cref(class_names), img_size);
@@ -999,10 +1118,17 @@ int run() {
         if (t.found) {
             body << ",\"name\":" << json_str(t.name) << ",\"conf\":" << json_num(t.conf)
                  << ",\"x_px\":" << json_num(t.x_px) << ",\"y_px\":" << json_num(t.y_px);
+            body << ",\"bbox_x_px\":" << json_num(t.bbox_x_px)
+                 << ",\"bbox_y_px\":" << json_num(t.bbox_y_px)
+                 << ",\"bbox_width_px\":" << json_num(t.bbox_width_px)
+                 << ",\"bbox_height_px\":" << json_num(t.bbox_height_px);
         }
         body << ",\"detections\":" << t.detections << ",\"multi\":" << json_bool(t.multi) << ",\"t\":" << json_num(t.t)
-             << ",\"age_ms\":" << (t.t != 0.0 ? json_num(age_ms) : "null") << ",\"width\":" << WIDTH
-             << ",\"height\":" << HEIGHT << "}";
+             << ",\"age_ms\":" << (t.t != 0.0 ? json_num(age_ms) : "null") << ",\"width\":" << t.frame_width
+             << ",\"height\":" << t.frame_height << ",\"source\":" << json_str(t.source)
+             << ",\"frame_sequence\":" << t.frame_sequence
+             << ",\"frame_timestamp_ns\":" << (t.frame_timestamp_ns >= 0 ? std::to_string(t.frame_timestamp_ns) : "null")
+             << "}";
         conn.send(200, "application/json", body.str());
     });
 
@@ -1028,8 +1154,7 @@ int run() {
         }
     });
 
-    std::cout << "open this on your phone/PC : http://" << lan_ip() << ":" << PORT << "/" << std::endl;
-    std::cout << "(mDNS alt, may not resolve): http://" << hostname() << ".local:" << PORT << "/" << std::endl;
+    std::cout << "HTTP endpoint (loopback only): http://127.0.0.1:" << PORT << "/" << std::endl;
     std::cout << "streaming. drag conf, or set the seconds and press Record." << std::endl;
     std::cout << "ctrl-c to quit." << std::endl;
 
@@ -1050,9 +1175,9 @@ int run() {
     return 0;
 }
 
-int main() {
+int main(int argc, char** argv) {
     try {
-        return run();
+        return run(argc, argv);
     } catch (const std::exception& e) {
         std::cerr << e.what() << std::endl;
         return 1;
