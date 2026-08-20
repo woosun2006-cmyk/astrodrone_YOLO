@@ -83,6 +83,53 @@ body -Z인지도 검증한다. 수신 도구는 설치된 `gz-transport`와 `gz-
 simulation/scripts/camera_smoke_test.sh
 ```
 
+## Canonical simulation launcher
+
+모든 표준 시뮬레이션은 `simulation/scripts/run_simulation.sh` 하나를 사용한다.
+관찰은 `observe`, C++ YOLO와 제어 계산 검증은 `shadow`, loopback SITL 명령 검증은
+명시적인 `sitl-flight` 프로파일로 구분한다. 대화형·고정 표적 전용 launcher는
+표준 경로에서 제거했다.
+
+```bash
+simulation/scripts/run_simulation.sh \
+  --profile sitl-flight \
+  --simulation-profile diagonal-approach-validation \
+  --status-monitor \
+  --upload-mission \
+  --arm
+```
+
+실제 YOLO 검증은 `scenario=default`에서 수행한다. `target-centered-hold`와
+`--fixed-basket`는 기본 경로가 아니며, 고정 입력이 필요한 별도 단위 테스트에서만
+명시적으로 사용할 수 있다.
+
+Mission Planner는 telemetry 관찰에만 사용한다. ARM, mode 변경, mission
+upload/start, parameter write, RC override를 하지 않는다. 두 public launcher 모두
+`--mode flight`를 항상 거부한다. `mav_connection`과
+`command_characterization` CTest가 통과하기 전에는 SITL command transport를
+활성화하지 않는다.
+
+Audit dependency 검사는 simulator를 시작하기 전에 동기적으로 한 번 수행한다.
+기본 `MAVLINK_AUDIT_READY_TIMEOUT=60` 안에서 launcher는 audit wrapper 생존,
+`AUDIT_LISTEN tcp:127.0.0.1:5770` 로그 marker와 실제 TCP LISTEN을 모두 확인한
+뒤에만 MAVProxy를 시작한다. 실패는 dependency validation, process early exit,
+bind/port collision, listen-log-without-socket, readiness timeout으로 구분된다.
+단계별 시간은 각 run의 `startup_timing.log`와 `audit.log`에 기록된다.
+
+Production C++ YOLO의 기본 source는 기존 IMX219 pipeline이다. 명시적으로
+`--frame-source gazebo --gazebo-topic <정확한-topic>`을 준 build만 Gazebo
+`gz.msgs.Image`를 받는다. Adapter는 640x480 RGB_INT8, stride 1920, payload와
+source timestamp를 검사해 BGR 입력으로 변환한 뒤 기존 `YoloTrt::infer()`에
+넘긴다. topic discovery나 첫 camera 자동 선택은 없다.
+
+현재 shadow/sitl-flight 런처는 WSL x86_64에서 `yolo_live`를 로컬 빌드하고,
+Gazebo topic과 `YOLO_MODEL/best_v5_wsl.engine`을 사용해 TensorRT inference를
+실행한다. Jetson Nano의 aarch64/TensorRT runtime과 동일한 성능을 의미하지는
+않지만, frame adapter부터 `/target`, target-distance, guidance까지의 실제
+inference 경로를 검증한다. confidence를 낮추거나 ONNX/PT 대체 runtime으로
+detection을 조작하지 않는다.
+로그는 `simulation/logs/interactive_<mode>_<timestamp>/`에 저장된다.
+
 camera scenario만 다른 외부 구성을 시험하려면 일반 `SIM_WORLD`/`SIM_MODEL`과
 혼동하지 않도록 `CAMERA_SIM_WORLD`, `CAMERA_SIM_MODEL`, `CAMERA_BODY_MODEL`,
 `CAMERA_LINK`, `CAMERA_SENSOR`를 명시한다. 기본 연결 smoke는 계속
@@ -91,6 +138,69 @@ camera scenario만 다른 외부 구성을 시험하려면 일반 `SIM_WORLD`/`S
 결과는 Git에서 제외된
 `simulation/logs/camera_smoke_<timestamp>/`에 topic 목록, publisher 정보,
 frame 통계, sample image와 cleanup 요약으로 저장된다.
+
+## canonical launcher의 audit 사용 범위
+
+`simulation/scripts/run_simulation.sh`는 프로필에 따라 audit 경로를 선택한다.
+
+| 프로필 | SITL과 router 경로 | audit 사용 | 관찰·검증 결과 |
+|---|---|---|---|
+| `observe` | `tcp:127.0.0.1:5760` → MAVProxy/router → UDP 14550, 14551, 14552 | 사용하지 않음 | 수신 전용 `telemetry_probe.json`에서 control/telemetry HEARTBEAT를 측정 |
+| `shadow` | SITL 5760 → audit 5770 → MAVProxy/router | 필수 | `packet_audit.json`, ShadowCommandSink, command 차단 결과를 검증 |
+| `sitl-flight` | SITL 5760 → audit 5770 → MAVProxy/router | 필수 | loopback SITL 명령 packet과 CommandGate 결과를 검증 |
+
+heartbeat 진단과 저부하 검증은 다음처럼 별도 simulation profile을 명시한다.
+
+```bash
+env -u DISPLAY -u WAYLAND_DISPLAY \
+  simulation/scripts/run_simulation.sh \
+    --profile observe --heartbeat-diagnostic \
+    --simulation-profile control-validation --headless --duration 60
+```
+
+`control-validation`은 소스 SDF나 STL을 수정하지 않으며 production guidance의
+`max_forward_speed=0.5m/s`와 `max_descent_speed=0.2m/s`를 그대로 사용한다. 실행 시 `/tmp`에
+`ensamb_with_gimbal`과 `ensamb_with_standoffs`의 임시 overlay를 만들고 다음만
+simulation 범위에서 바꾼다.
+
+- IMU update rate: source `1000Hz` → validation `250Hz`
+- ArduPilot Gazebo plugin: source `lock_step=1` → validation `lock_step=0`
+- camera update rate: `10Hz` 유지
+- world, model 이름, `ensambFinal.STL`, `down_camera` topic, `GstCameraPlugin` 유지
+- headless에서는 `gz sim -s`를 사용해 GUI client와 `ImageDisplay`를 실행하지 않음
+
+따라서 이 profile의 heartbeat/RTF 결과는 실제 기체의 IMU 주기나 lockstep 동작을
+검증하는 값이 아니라, WSL에서 YOLO/control 경로를 안정적으로 검증하기 위한
+simulation transport 결과다. 일반 fidelity 비교는 `--simulation-profile default`
+로 별도 실행한다. `--heartbeat-diagnostic`은 observe에서만 audit relay를
+추가하며, 일반 observe의 기본 직접 telemetry 경로는 바꾸지 않는다.
+
+2026-08-16 검증에서는 `control-validation`으로 observe 60초를 실행해
+SITL 입력과 UDP 14550/14551의 유효 ArduPilot HEARTBEAT 최대 간격을 각각
+약 `1.004s`로 확인했다. shadow 30초에서는 TensorRT YOLO readiness와
+target-distance/control 시작, ShadowCommandSink, vehicle command 0건을
+확인했다. sitl-flight는 mission upload/AUTO/ARM 후 GUIDED와 velocity guidance를
+수행했고, target loss 10초 후 LOITER 호버링 정책으로 control이 정상 종료했다.
+
+`observe`의 telemetry probe는 UDP 14550과 14551에 바인드해 패킷을 받기만
+하며 송신하지 않는다. ArduPilot HEARTBEAT는 `msgid=0`, `sysid=1`,
+`compid=1`, `autopilot=ARDUPILOTMEGA`를 모두 만족하는 경우에만 집계한다.
+GCS HEARTBEAT, telemetry 일반 메시지, `BAD_DATA`는 HEARTBEAT 통계에서
+제외한다.
+
+`shadow`와 `sitl-flight`의 audit relay는 `simulation/tests`에 있는 검증용
+TCP 중계기다. production control이나 MAVLink transport의 필수 의존성이
+아니며, relay가 실행되지 않거나 SITL 방향에서 유효한 ArduPilot HEARTBEAT를
+파싱하지 못하면 해당 프로필은 성공으로 표시하지 않는다. 패킷 방향은 다음과
+같이 기록된다.
+
+```text
+SITL_AUTOPILOT_TO_MAVPROXY
+MAVPROXY_TO_SITL_AUTOPILOT
+```
+
+audit 결과는 `simulation/logs/run_<profile>_<timestamp>/packet_audit.json`,
+observe 직접 측정 결과는 같은 디렉터리의 `telemetry_probe.json`에 저장된다.
 
 Gazebo resource lookup은 항상 다음 순서다.
 
@@ -115,11 +225,11 @@ Custom model은 외부 checkout의 build plugin을 계속 사용한다. 기본 �
 # 터미널 1 (GUI, WSLg가 없으면 GAZEBO_HEADLESS=1 추가)
 simulation/scripts/start_gazebo.sh
 
-# 터미널 2
+# 터미널 2: SITL과 bundled MAVProxy를 함께 시작한다.
 simulation/scripts/start_sitl.sh
 
-# 터미널 3: 설치된 MAVProxy를 자동 탐지한다.
-simulation/scripts/start_router.sh
+# start_sitl.sh가 control=14550, telemetry=14551, GCS=14552를 연다.
+# 별도 start_router.sh는 실행하지 않는다.
 
 # 터미널 4
 simulation/scripts/run_control_shadow.sh
@@ -144,8 +254,8 @@ Gazebo ArduPilotPlugin  udp bind 127.0.0.1:9002
              ^ JSON FDM 자동 응답 peer
 ArduCopter SITL        tcp server 127.0.0.1:5760 (instance 0)
              |
-             +-- MAVProxy --> udp 127.0.0.1:14551  read-only telemetry
-                         \-> 14550 control / 14552 GCS (선택, 기본 비활성)
+             +-- bundled MAVProxy --> udp 127.0.0.1:14551 telemetry
+                                  \-> 14550 control / 14552 GCS
 ```
 
 instance `N`의 SITL TCP port는 ArduPilot `sim_vehicle.py`가 사용하는
@@ -158,8 +268,10 @@ loopback-only 정책에 맞지 않아 사용하지 않는다. `setting/port.yaml
 다른 bind port를 사용한다. simulation
 endpoint는 모두 loopback으로 검증되며 `/dev/tty*`, serial 문자열과 비-loopback
 주소는 거부된다. read-only endpoint는 연결 점검용이며 실제 알고리즘 시험에서는
-control consumer가 그 자리를 대신할 수 있다. GCS/Mission Planner는 기본 smoke에
-필수가 아니며, 여러 consumer가 동시에 필요할 때만 MAVProxy fan-out을 추가한다.
+control consumer가 그 자리를 대신할 수 있다. GCS/Mission Planner는 UDP 14552를
+사용한다. 패킷 감사 smoke처럼 외부 MAVProxy가 필요할 때만
+`SITL_MAVPROXY_MODE=external`로 SITL을 시작한 뒤 `start_mavlink_audit.sh`와
+`start_router.sh`를 별도로 실행한다.
 
 ## MAVProxy와 read-only의 의미
 

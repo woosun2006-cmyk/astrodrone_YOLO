@@ -1,0 +1,16 @@
+case_id,source,target_state,x_px,y_px,altitude_m,target_age_ms,link_age_ms
+center,synthetic,valid,0,0,3,0,0
+left,synthetic,valid,-240,0,3,0,0
+right,synthetic,valid,240,0,3,0,0
+up,synthetic,valid,0,180,3,0,0
+down,synthetic,valid,0,-180,3,0,0
+top_left,synthetic,valid,-320,240,3,0,0
+top_right,synthetic,valid,320,240,3,0,0
+bottom_left,synthetic,valid,-320,-240,3,0,0
+bottom_right,synthetic,valid,320,-240,3,0,0
+target_missing,synthetic,missing,0,0,3,0,0
+target_stale_yolo,synthetic,yolo_stale,80,60,3,401,0
+target_stale_link,synthetic,link_stale,80,60,3,0,600
+same_pixel_alt_1m,synthetic,valid,80,60,1,0,0
+same_pixel_alt_3m,synthetic,valid,80,60,3,0,0
+same_pixel_alt_5m,synthetic,valid,80,60,5,0,0

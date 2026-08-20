@@ -155,7 +155,8 @@
 
     <include>
       <uri>model://ensamb_with_gimbal</uri>
-      <pose degrees="true">0 0 0.195 0 0 90</pose>
+      <!-- The custom model has 6 cm legs; its lowest collision point is z=-0.06. -->
+      <pose degrees="true">0 0 0.06 0 0 90</pose>
     </include>
 
     <include>

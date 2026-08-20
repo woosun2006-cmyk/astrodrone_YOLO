@@ -10,6 +10,18 @@ launcher="$ARDUPILOT_DIR/Tools/autotest/sim_vehicle.py"
 binary="$ARDUPILOT_DIR/build/sitl/bin/arducopter"
 require_executable "$launcher"
 require_executable "$binary"
+case "$SITL_MAVPROXY_MODE" in
+  bundled|external) ;;
+  *) sim_die "SITL_MAVPROXY_MODE must be bundled or external (got: $SITL_MAVPROXY_MODE)" ;;
+esac
+if [[ "$SITL_MAVPROXY_MODE" == bundled ]]; then
+  mavproxy_path="$(find_mavproxy)" ||
+    sim_die 'MAVProxy not found (set MAVPROXY_BIN or provide it in the ArduPilot venv)'
+  verify_mavproxy "$mavproxy_path" ||
+    sim_die "MAVProxy executable/version/pymavlink verification failed: $mavproxy_path"
+  # sim_vehicle.py starts the literal command `mavproxy.py`.
+  export PATH="$(dirname -- "$mavproxy_path"):$PATH"
+fi
 require_uint SITL_INSTANCE "$SITL_INSTANCE"
 [[ "$SITL_SPEEDUP" =~ ^[0-9]+([.][0-9]+)?$ ]] || sim_die "SITL_SPEEDUP must be positive numeric (got: $SITL_SPEEDUP)"
 awk -v value="$SITL_SPEEDUP" 'BEGIN {exit !(value > 0)}' || sim_die 'SITL_SPEEDUP must be greater than zero'
@@ -33,9 +45,19 @@ state_dir="$SIM_RUNTIME_DIR/sitl-$SITL_INSTANCE"
 mkdir -p -- "$state_dir"
 cmd=(
   "$launcher" -v ArduCopter -f "$SITL_FRAME" --model JSON
-  -I "$SITL_INSTANCE" -S "$SITL_SPEEDUP" -N
-  --no-mavproxy --no-extra-ports --use-dir "$state_dir"
+  -I "$SITL_INSTANCE" -S "$SITL_SPEEDUP" -N --wipe
+  --no-extra-ports --use-dir "$state_dir"
 )
+if [[ "$SITL_MAVPROXY_MODE" == bundled ]]; then
+  cmd+=(
+    --out="127.0.0.1:$CONTROL_UDP_PORT"
+    --out="127.0.0.1:$TELEMETRY_UDP_PORT"
+    --out="127.0.0.1:$GCS_UDP_PORT"
+    --mavproxy-args "--non-interactive --default-modules=link --streamrate $MAVPROXY_STREAMRATE --heartbeat-rate 1"
+  )
+else
+  cmd+=(--no-mavproxy)
+fi
 if [[ -n "$SITL_LOCATION" ]]; then
   grep -Eq "^${SITL_LOCATION}[[:space:]]*=" "$ARDUPILOT_DIR/Tools/autotest/locations.txt" ||
     sim_die "SITL_LOCATION is not present in ArduPilot locations.txt: $SITL_LOCATION"
@@ -51,11 +73,22 @@ if [[ -n "$SITL_PARAM_FILE" ]]; then
   cmd+=(--add-param-file "$param_real")
 fi
 
-sim_log 'vehicle=ArduCopter model=JSON; --wipe is not used and existing SITL state is not deleted'
+if [[ "$SITL_MAVPROXY_MODE" == bundled ]]; then
+  version="$($mavproxy_path --version 2>&1 | awk -F': ' '/MAVProxy Version:/{print $2; exit}')"
+  sim_log 'stack=sim_vehicle.py -> ArduCopter SITL + bundled MAVProxy'
+else
+  sim_log 'stack=sim_vehicle.py -> ArduCopter SITL only; external MAVProxy expected'
+fi
+sim_log 'vehicle=ArduCopter model=JSON; --wipe resets the simulation EEPROM on every start'
 sim_log "Gazebo plugin endpoint=udp:127.0.0.1:$GAZEBO_FDM_PORT"
-sim_log "router source=tcp:127.0.0.1:$SITL_MASTER_TCP_PORT"
+if [[ "$SITL_MAVPROXY_MODE" == bundled ]]; then
+  sim_log "MAVProxy=$version path=$mavproxy_path master=tcp:127.0.0.1:$SITL_MASTER_TCP_PORT"
+else
+  sim_log "external MAVProxy master=tcp:127.0.0.1:$SITL_MASTER_TCP_PORT"
+fi
 sim_log "additional SITL ports: SERIAL1=tcp:127.0.0.1:$((5762 + 10 * SITL_INSTANCE)) SERIAL2=tcp:127.0.0.1:$((5763 + 10 * SITL_INSTANCE)) IRLock=udp:127.0.0.1:$((9005 + 10 * SITL_INSTANCE))"
-sim_log "required MAVLink output after MAVProxy: telemetry=udp:127.0.0.1:$TELEMETRY_UDP_PORT"
-sim_log "optional outputs: control_enabled=$ENABLE_CONTROL_OUTPUT GCS_enabled=$ENABLE_GCS_OUTPUT"
+if [[ "$SITL_MAVPROXY_MODE" == bundled ]]; then
+  sim_log "MAVProxy outputs: control=udp:127.0.0.1:$CONTROL_UDP_PORT telemetry=udp:127.0.0.1:$TELEMETRY_UDP_PORT GCS=udp:127.0.0.1:$GCS_UDP_PORT"
+fi
 printf '[simulation] command:'; printf ' %q' "${cmd[@]}"; printf '\n'
 run_foreground_tracked sitl "$launcher" "${cmd[@]}"

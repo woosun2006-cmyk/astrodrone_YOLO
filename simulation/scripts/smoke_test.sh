@@ -58,7 +58,7 @@ wrappers+=("$!")
 wait_for_port "$GAZEBO_FDM_PORT" 30 Gazebo-plugin
 wait_for_text "${prefix}_gazebo.log" 'Enabling camera sensor' 30 Gazebo-sensors
 
-DISPLAY= WAYLAND_DISPLAY= "$SCRIPT_DIR/start_sitl.sh" \
+SITL_MAVPROXY_MODE=external DISPLAY= WAYLAND_DISPLAY= "$SCRIPT_DIR/start_sitl.sh" \
   >"${prefix}_sitl.log" 2>"${prefix}_sitl.err.log" &
 wrappers+=("$!")
 wait_for_port "$SITL_MASTER_TCP_PORT" 45 ArduCopter-SITL
