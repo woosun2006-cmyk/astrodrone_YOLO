@@ -119,7 +119,8 @@ HttpServer::HttpServer(int port) {
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
+    // Keep the local HTTP surface off host and LAN interfaces.
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     addr.sin_port = htons(static_cast<uint16_t>(port));
 
     if (bind(listen_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {

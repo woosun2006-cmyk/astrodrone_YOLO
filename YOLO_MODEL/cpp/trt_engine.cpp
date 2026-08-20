@@ -185,12 +185,9 @@ YoloTrt::~YoloTrt() {
 
 void YoloTrt::build_or_load(const std::string& onnx_path, const std::string& engine_cache_path, bool fp16) {
     struct stat onnx_st{}, engine_st{};
-    if (stat(onnx_path.c_str(), &onnx_st) != 0) {
-        throw std::runtime_error("onnx model not found: " + onnx_path);
-    }
-
+    const bool have_engine = stat(engine_cache_path.c_str(), &engine_st) == 0;
     std::vector<char> engine_bytes;
-    bool have_cache = stat(engine_cache_path.c_str(), &engine_st) == 0 && engine_st.st_mtime >= onnx_st.st_mtime;
+    bool have_cache = have_engine;
     if (have_cache) {
         std::ifstream f(engine_cache_path, std::ios::binary | std::ios::ate);
         if (f) {
@@ -209,11 +206,15 @@ void YoloTrt::build_or_load(const std::string& onnx_path, const std::string& eng
         std::cerr << "[yolo_trt] loading cached engine: " << engine_cache_path << std::endl;
         impl_->engine = impl_->runtime->deserializeCudaEngine(engine_bytes.data(), engine_bytes.size());
         if (!impl_->engine) {
-            std::cerr << "[yolo_trt] cached engine failed to deserialize, rebuilding" << std::endl;
+            throw std::runtime_error("failed to deserialize TensorRT engine (original preserved): " +
+                                     engine_cache_path);
         }
     }
 
     if (!impl_->engine) {
+        if (stat(onnx_path.c_str(), &onnx_st) != 0) {
+            throw std::runtime_error("onnx model not found and no usable engine: " + onnx_path);
+        }
         std::cerr << "[yolo_trt] building TensorRT engine from " << onnx_path
                   << " (first run on a new onnx is slow, ~1-2 min on a Jetson Nano)" << std::endl;
         auto* builder = nvinfer1::createInferBuilder(g_logger);

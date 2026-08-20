@@ -2,9 +2,10 @@
 
 // TensorRT/ONNX inference backend for the C++ port of ../yolo_live.py.
 //
-// Swaps yolo_live.py's `torch.hub` + prototype.pt path for prototype.onnx
-// built into a TensorRT engine (prototype.engine, cached next to the onnx
-// and rebuilt automatically if the onnx is newer). Everything torch.hub's
+// Swaps yolo_live.py's `torch.hub` + prototype.pt path for a TensorRT engine
+// (0812best.engine in the current Gazebo profile). An existing engine is
+// loaded as-is and is never overwritten on deserialization failure. If no
+// engine exists, the ONNX file is used to build a cache. Everything torch.hub's
 // AutoShape did for free in Python - letterbox resize, BGR/RGB + HWC/CHW
 // conversion, NMS, box rescale back to the original frame - is implemented
 // by hand here, since TensorRT only runs the bare network.
@@ -27,9 +28,9 @@ enum class DataType : int32_t;
 
 class YoloTrt {
 public:
-    // onnx_path: e.g. YOLO_MODEL/prototype.onnx
-    // engine_cache_path: e.g. YOLO_MODEL/prototype.engine - reused as-is if
-    // its mtime is >= onnx_path's, otherwise rebuilt and overwritten.
+    // onnx_path: fallback source, e.g. YOLO_MODEL/prototype.onnx
+    // engine_cache_path: e.g. YOLO_MODEL/0812best.engine - loaded as-is when
+    // present; it is never overwritten when deserialization fails.
     // fp16: see yolo_live.py's HALF constant - this project measured FP16
     // collapsing mAP50 0.995 -> 0.659 on a GTX 1660 SUPER and left it
     // unverified on Jetson hardware, so this defaults to false; only flip it
