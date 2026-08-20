@@ -29,7 +29,9 @@
     background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
     padding: 12px;
   }
-  .video-panel img { width: 100%; display: block; border-radius: 4px; background: #000; }
+  .video-stage { position: relative; width: 100%; background: #000; }
+  .video-stage img { width: 100%; display: block; border-radius: 4px; background: #000; }
+  .video-stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
   .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .stat { padding: 8px 10px; background: #10141a; border-radius: 6px; }
   .stat .label { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
@@ -52,16 +54,25 @@
 </header>
 <main>
   <div class="panel video-panel">
-    <h2>영상 (YOLO live)</h2>
-    <img id="videoStream" alt="video stream">
+    <h2>영상 및 표적 정보</h2>
+    <div class="video-stage">
+      <img id="videoStream" alt="debug video stream">
+      <canvas id="overlay"></canvas>
+    </div>
   </div>
   <div class="panel">
     <h2>상태</h2>
     <div class="stat-grid">
       <div class="stat"><div class="label">모드</div><div class="value" id="mode">--</div></div>
+      <div class="stat"><div class="label">상태</div><div class="value" id="state">--</div></div>
       <div class="stat"><div class="label">Arm</div><div class="value" id="armed">--</div></div>
       <div class="stat"><div class="label">고도</div><div class="value" id="alt">--</div></div>
       <div class="stat"><div class="label">타겟</div><div class="value" id="target">--</div></div>
+      <div class="stat"><div class="label">GPS/EKF</div><div class="value" id="health">--</div></div>
+      <div class="stat"><div class="label">배터리</div><div class="value" id="battery">--</div></div>
+      <div class="stat"><div class="label">속도</div><div class="value" id="velocity">--</div></div>
+      <div class="stat"><div class="label">영상 링크</div><div class="value" id="videoStatus">--</div></div>
+      <div class="stat"><div class="label">안전 사유</div><div class="value" id="safetyReason">--</div></div>
     </div>
     <h2 style="margin-top:16px">전송 링크</h2>
     <div class="link-stats">
@@ -76,7 +87,7 @@
 async function loadConfig() {
   const r = await fetch('/config');
   const cfg = await r.json();
-  document.getElementById('videoStream').src = `http://${cfg.jetson_host}:${cfg.yolo_port}/stream`;
+  document.getElementById('videoStream').src = cfg.video_url;
 }
 
 function fmt(v, digits) {
@@ -101,29 +112,86 @@ function render(d) {
 
   document.getElementById('mode').textContent = t.mode ?? '--';
   document.getElementById('mode').classList.toggle('stale', stale);
+  document.getElementById('state').textContent = t.state ?? '--';
 
   const armedEl = document.getElementById('armed');
   armedEl.innerHTML = t.armed
     ? '<span class="pill pill-armed">ARMED</span>'
     : '<span class="pill pill-disarmed">disarmed</span>';
 
-  document.getElementById('alt').textContent = t.alt_m != null ? fmt(t.alt_m, 2) + ' m' : '--';
+  document.getElementById('alt').textContent = t.altitude_m != null ? fmt(t.altitude_m, 2) + ' m' : '--';
   document.getElementById('alt').classList.toggle('stale', stale);
 
   const targetEl = document.getElementById('target');
-  if (t.target_detected === true) {
+  if (t.target_found === true) {
     targetEl.innerHTML = `<span class="pill pill-detected">감지됨</span>` +
       (t.target_distance_m != null ? ` ${fmt(t.target_distance_m,1)}m` : '');
-  } else if (t.target_detected === false) {
+  } else if (t.target_found === false) {
     targetEl.innerHTML = '<span class="pill pill-none">없음</span>';
   } else {
     targetEl.textContent = '--';
   }
 
+  document.getElementById('health').textContent =
+    `${t.gps_fix ?? '--'} / ${t.ekf_healthy === true ? '정상' : '확인 필요'}`;
+  document.getElementById('battery').textContent =
+    t.battery_voltage_v != null ? `${fmt(t.battery_voltage_v, 1)}V ${t.battery_percent ?? '--'}%` : '--';
+  document.getElementById('velocity').textContent =
+    `명령 ${fmt(t.vx, 2)}, ${fmt(t.vy, 2)}, ${fmt(t.vz, 2)} / ` +
+    `실제 ${fmt(t.actual_vx, 2)}, ${fmt(t.actual_vy, 2)}, ${fmt(t.actual_vz, 2)}`;
+  const video = d.video || {};
+  const videoStale = video.age_ms == null || video.age_ms > 2000;
+  document.getElementById('videoStatus').textContent = videoStale
+    ? '지연/없음'
+    : `정상 ${Math.round(video.age_ms)}ms`;
+  document.getElementById('videoStatus').classList.toggle('stale', videoStale);
+  document.getElementById('safetyReason').textContent =
+    t.command_safety_reason || t.safety_reason || '정상';
+  drawOverlay(t);
+
   document.getElementById('lDelivered').textContent = d.link.delivered ?? 0;
   document.getElementById('lRecovered').textContent = d.link.recovered ?? 0;
   document.getElementById('lLost').textContent = d.link.lost ?? 0;
   document.getElementById('lCrcFail').textContent = d.link.crc_fail ?? 0;
+}
+
+function drawOverlay(t) {
+  const img = document.getElementById('videoStream');
+  const canvas = document.getElementById('overlay');
+  if (!img.clientWidth || !img.clientHeight) return;
+  const rect = img.getBoundingClientRect();
+  canvas.width = Math.round(rect.width);
+  canvas.height = Math.round(rect.height);
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const boxWidth = t.bbox_width_px ?? t.target_width_px;
+  const boxHeight = t.bbox_height_px ?? t.target_height_px;
+  if (t.target_found !== true || boxWidth == null || boxHeight == null) return;
+  const frameWidth = Math.max(1, Number(t.frame_width ?? t.width ?? 640));
+  const frameHeight = Math.max(1, Number(t.frame_height ?? t.height ?? 480));
+  const scale = Math.min(canvas.width / frameWidth, canvas.height / frameHeight);
+  const renderedWidth = frameWidth * scale;
+  const renderedHeight = frameHeight * scale;
+  const offsetX = (canvas.width - renderedWidth) / 2;
+  const offsetY = (canvas.height - renderedHeight) / 2;
+  const w = Number(boxWidth);
+  const h = Number(boxHeight);
+  const hasAbsoluteBox = t.bbox_x_px != null && t.bbox_y_px != null &&
+    Number.isFinite(Number(t.bbox_x_px)) && Number.isFinite(Number(t.bbox_y_px));
+  const sourceX = hasAbsoluteBox
+    ? Number(t.bbox_x_px)
+    : Number(t.target_x_px ?? 0) + frameWidth / 2 - w / 2;
+  const sourceY = hasAbsoluteBox
+    ? Number(t.bbox_y_px)
+    : frameHeight / 2 - Number(t.target_y_px ?? 0) - h / 2;
+  const left = offsetX + sourceX * scale;
+  const top = offsetY + sourceY * scale;
+  ctx.strokeStyle = '#35c46a';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(left, top, w * scale, h * scale);
+  ctx.fillStyle = '#35c46a';
+  ctx.font = '14px sans-serif';
+  ctx.fillText(`${t.target_class || 'target'} ${fmt(t.target_confidence, 2)}`, left, Math.max(16, top - 4));
 }
 
 function connectStream() {

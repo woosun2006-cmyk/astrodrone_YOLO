@@ -1,37 +1,28 @@
-// Reads real vehicle/target state and pushes it through FecEncoder ->
-// UdpSender at rate_hz. See gcs/PLAN.md for the wire-format/FEC design.
+// Read-only onboard telemetry publisher.
 //
-// mode/armed come straight from MAVLink HEARTBEAT (this process opens the
-// Pixhawk serial port directly, like check_link.cpp/check_alt.cpp do).
-// altitude + target-detection state are NOT read independently here --
-// they're read from target_distance.cpp's existing TargetRangeMsg loopback
-// broadcast (control/target_link.hpp), which already fuses YOLO's /target
-// HTTP endpoint with a fresh ALTITUDE reading for control.cpp's own use.
-// Reusing that avoids a second HTTP client and a second ALTITUDE stream
-// request; it does mean this telemetry alt/target fields go stale if
-// target_distance.cpp isn't running.
-//
-// KNOWN LIMITATION: this opens setting/MAVLink.yaml's real.serial address
-// directly, the same way check_link.cpp/check_alt.cpp/target_distance.cpp
-// each already do. Only one process can reliably own that serial port at a
-// time -- fine for the standalone testing this was built for, but it WILL
-// contend with control.cpp/target_distance.cpp if run alongside them during
-// an actual flight. Fixing that for real needs the MAVLink relay
-// (mavlink-router fanning the serial stream out to setting/port.yaml's
-// mavlink_* UDP ports) that setting/port.yaml already documents but nothing
-// in this repo sets up yet.
+// The external MAVLink router owns Pixhawk serial. This process subscribes to
+// its loopback UDP telemetry output, builds a small JSON snapshot, and sends
+// that snapshot to the laptop using the existing FEC transport. It never
+// calls MavConnection::send(), requests message intervals, or opens a serial
+// device.
 
 #include <unistd.h>
 #include <limits.h>
 
+#include <algorithm>
 #include <chrono>
 #include <csignal>
 #include <cstdint>
-#include <cstdio>
+#include <cstdlib>
+#include <cmath>
 #include <fstream>
+#include <iomanip>
+#include <iostream>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "drone_lib.hpp"
 #include "target_link.hpp"
@@ -42,11 +33,43 @@
 namespace {
 
 volatile std::sig_atomic_t g_stop = 0;
-void on_sigint(int) { g_stop = 1; }
+void on_signal(int) { g_stop = 1; }
 
-// Mirrors yaml_settings.cpp's private load_setting_file() path resolution
-// (exe_dir/../../setting/<file>), duplicated here instead of exported from
-// that shared file so other executables' build stays untouched.
+using Clock = std::chrono::steady_clock;
+
+struct Args {
+    std::string telemetry_endpoint;
+    double duration_sec = 0.0;
+};
+
+struct Seen {
+    bool value = false;
+    Clock::time_point at{};
+};
+
+struct VehicleState {
+    std::string mode = "UNKNOWN";
+    bool armed = false;
+    bool heartbeat_valid = false;
+    bool gps_valid = false;
+    bool ekf_valid = false;
+    bool battery_valid = false;
+    int gps_fix = 0;
+    int gps_satellites = 0;
+    int battery_percent = -1;
+    double battery_voltage = 0.0;
+    double altitude_m = 0.0;
+    double actual_vx = 0.0;
+    double actual_vy = 0.0;
+    double actual_vz = 0.0;
+    bool actual_velocity_valid = false;
+    Seen heartbeat;
+    Seen gps;
+    Seen ekf;
+    Seen battery;
+    Seen altitude;
+};
+
 YamlValue load_gcs_yaml() {
     char exe_path[PATH_MAX];
     ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
@@ -56,196 +79,301 @@ YamlValue load_gcs_yaml() {
         std::string full(exe_path);
         exe_dir = full.substr(0, full.find_last_of('/'));
     }
-    const std::string candidates[] = {
+    std::vector<std::string> candidates;
+    if (const char* settings_dir = std::getenv("ASTRODRONE_SETTINGS_DIR");
+        settings_dir && *settings_dir) {
+        candidates.emplace_back(std::string(settings_dir) + "/gcs.yaml");
+    }
+    if (const char* repo = std::getenv("ASTRODRONE_REPO"); repo && *repo) {
+        candidates.emplace_back(std::string(repo) + "/setting/gcs.yaml");
+    }
+    const std::string relative_candidates[] = {
         exe_dir + "/../../setting/gcs.yaml",
         exe_dir + "/../setting/gcs.yaml",
     };
-    for (const auto& c : candidates) {
-        std::ifstream probe(c);
-        if (probe.good()) return parse_yaml_file(c);
+    for (const auto& path : relative_candidates) candidates.push_back(path);
+    for (const auto& path : candidates) {
+        std::ifstream probe(path);
+        if (probe.good()) return parse_yaml_file(path);
     }
-    throw std::runtime_error("gcs.yaml not found relative to executable");
+    throw std::runtime_error("gcs.yaml not found relative to telem_sender");
 }
 
-// Same helper as check_alt.cpp's anonymous-namespace request_message_interval
-// -- not exported from that file, so duplicated here.
-void request_message_interval(MavConnection& connection, uint32_t message_id, double frequency_hz) {
-    int64_t interval_us = static_cast<int64_t>(1'000'000 / frequency_hz);
-    mavlink_message_t msg;
-    mavlink_msg_command_long_pack(255, 0, &msg, connection.target_system(),
-                                   connection.target_component(), MAV_CMD_SET_MESSAGE_INTERVAL, 0,
-                                   static_cast<float>(message_id), static_cast<float>(interval_us),
-                                   0, 0, 0, 0, 0);
-    connection.send(msg);
+bool is_loopback_udp(const std::string& endpoint) {
+    return endpoint.rfind("udp:127.0.0.1:", 0) == 0;
 }
 
-// Same helper as check_link.cpp's anonymous-namespace mode_string.
-std::string mode_string(uint32_t custom_mode) {
-    for (const auto& entry : copter_mode_mapping()) {
-        if (entry.second == custom_mode) return entry.first;
-    }
-    return "Mode(" + std::to_string(custom_mode) + ")";
-}
-
-struct VehicleState {
-    std::string mode = "UNKNOWN";
-    bool armed = false;
-    bool have_heartbeat = false;
-};
-
-// Retries open_connection()+wait_heartbeat() until one succeeds or g_stop
-// is set (returns nullptr in that case). Both can throw (e.g. the serial
-// device node disappearing -- USB hiccup, cable wiggle) as well as just
-// time out without a heartbeat; either way this is a telemetry/debug feed,
-// not the flight-control link, so it should keep trying rather than take
-// the whole process down. Also called mid-run to reconnect after a read
-// error further down.
-std::unique_ptr<MavConnection> connect_mavlink(const YamlValue& serial, double heartbeat_timeout) {
-    while (!g_stop) {
-        try {
-            std::fprintf(stderr, "telem_sender: waiting for Pixhawk heartbeat on %s...\n",
-                         serial["address"].as_string().c_str());
-            auto mav = open_connection(serial["address"].as_string(),
-                                        static_cast<int>(serial["baud"].as_long()));
-            if (mav->wait_heartbeat(heartbeat_timeout)) {
-                std::fprintf(stderr, "telem_sender: connected (system=%d component=%d)\n",
-                             mav->target_system(), mav->target_component());
-                return mav;
-            }
-            std::fprintf(stderr, "telem_sender: no heartbeat within %.0fs, retrying...\n",
-                         heartbeat_timeout);
-        } catch (const std::exception& e) {
-            std::fprintf(stderr, "telem_sender: MAVLink connect failed (%s), retrying in 3s...\n",
-                         e.what());
-            std::this_thread::sleep_for(std::chrono::seconds(3));
+Args parse_args(int argc, char** argv) {
+    Args args;
+    const char* env_endpoint = std::getenv("MAVPROXY_TELEMETRY_ENDPOINT");
+    args.telemetry_endpoint = env_endpoint && *env_endpoint
+                                  ? env_endpoint
+                                  : "udp:127.0.0.1:14551";
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if ((arg == "--telemetry-endpoint" || arg == "--connect") && i + 1 < argc) {
+            args.telemetry_endpoint = argv[++i];
+        } else if (arg == "--duration" && i + 1 < argc) {
+            args.duration_sec = std::stod(argv[++i]);
+        } else if (arg == "--help") {
+            std::cout << "사용법: telem_sender [--telemetry-endpoint udp:127.0.0.1:14551] [--duration 초]\n";
+            std::exit(0);
+        } else {
+            throw std::runtime_error("알 수 없는 옵션: " + arg);
         }
     }
-    return nullptr;
+    if (!is_loopback_udp(args.telemetry_endpoint)) {
+        throw std::runtime_error(
+            "telem_sender는 외부 router의 loopback UDP telemetry만 허용합니다: " +
+            args.telemetry_endpoint);
+    }
+    return args;
 }
 
-std::string make_telemetry_json(uint32_t seq, const VehicleState& vehicle,
-                                 const TargetRangeMsg& target, bool have_target) {
-    using namespace std::chrono;
-    const auto ts_ms =
-        duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
-    std::ostringstream os;
-    os << "{\"seq\":" << seq << ",\"ts_ms\":" << ts_ms << ",\"mode\":\"" << vehicle.mode << "\""
-       << ",\"armed\":" << (vehicle.armed ? "true" : "false")
-       << ",\"link_ok\":" << (vehicle.have_heartbeat ? "true" : "false");
-    if (have_target && target.altitude_valid) {
-        os << ",\"alt_m\":" << target.altitude_m;
-    } else {
-        os << ",\"alt_m\":null";
+double age_ms(const Seen& seen, Clock::time_point now) {
+    if (!seen.value) return -1.0;
+    return std::chrono::duration<double, std::milli>(now - seen.at).count();
+}
+
+void mark(Seen& seen, Clock::time_point now) {
+    seen.value = true;
+    seen.at = now;
+}
+
+bool is_vehicle_message(const mavlink_message_t& message) {
+    return message.sysid == 1 && message.compid == MAV_COMP_ID_AUTOPILOT1;
+}
+
+void consume_mavlink(const mavlink_message_t& message, VehicleState& state,
+                     Clock::time_point now) {
+    if (!is_vehicle_message(message)) return;
+
+    switch (message.msgid) {
+        case MAVLINK_MSG_ID_HEARTBEAT: {
+            mavlink_heartbeat_t heartbeat{};
+            if (!is_valid_ardupilot_heartbeat(message, &heartbeat)) return;
+            for (const auto& entry : copter_mode_mapping()) {
+                if (entry.second == heartbeat.custom_mode) {
+                    state.mode = entry.first;
+                    break;
+                }
+            }
+            state.armed = is_armed_from_heartbeat(heartbeat);
+            state.heartbeat_valid = true;
+            mark(state.heartbeat, now);
+            break;
+        }
+        case MAVLINK_MSG_ID_GPS_RAW_INT: {
+            mavlink_gps_raw_int_t gps{};
+            mavlink_msg_gps_raw_int_decode(&message, &gps);
+            state.gps_fix = gps.fix_type;
+            state.gps_satellites = gps.satellites_visible == UINT8_MAX
+                                        ? 0
+                                        : gps.satellites_visible;
+            state.gps_valid = gps.fix_type >= 3;
+            mark(state.gps, now);
+            break;
+        }
+        case MAVLINK_MSG_ID_EKF_STATUS_REPORT: {
+            mavlink_ekf_status_report_t ekf{};
+            mavlink_msg_ekf_status_report_decode(&message, &ekf);
+            const uint16_t required = ESTIMATOR_ATTITUDE | ESTIMATOR_VELOCITY_HORIZ |
+                                      ESTIMATOR_POS_HORIZ_REL;
+            state.ekf_valid = (ekf.flags & required) == required;
+            mark(state.ekf, now);
+            break;
+        }
+        case MAVLINK_MSG_ID_SYS_STATUS: {
+            mavlink_sys_status_t sys{};
+            mavlink_msg_sys_status_decode(&message, &sys);
+            state.battery_voltage = sys.voltage_battery == UINT16_MAX
+                                        ? 0.0
+                                        : static_cast<double>(sys.voltage_battery) / 1000.0;
+            state.battery_percent = sys.battery_remaining == INT8_MAX
+                                        ? -1
+                                        : static_cast<int>(sys.battery_remaining);
+            state.battery_valid = state.battery_voltage > 0.0 &&
+                                  state.battery_percent >= 0;
+            mark(state.battery, now);
+            break;
+        }
+        case MAVLINK_MSG_ID_GLOBAL_POSITION_INT: {
+            mavlink_global_position_int_t position{};
+            mavlink_msg_global_position_int_decode(&message, &position);
+            state.altitude_m = static_cast<double>(position.relative_alt) / 1000.0;
+            state.actual_vx = static_cast<double>(position.vx) / 100.0;
+            state.actual_vy = static_cast<double>(position.vy) / 100.0;
+            state.actual_vz = static_cast<double>(position.vz) / 100.0;
+            state.actual_velocity_valid = true;
+            mark(state.altitude, now);
+            break;
+        }
+        case MAVLINK_MSG_ID_LOCAL_POSITION_NED: {
+            mavlink_local_position_ned_t position{};
+            mavlink_msg_local_position_ned_decode(&message, &position);
+            state.altitude_m = std::max(0.0, -static_cast<double>(position.z));
+            state.actual_vx = position.vx;
+            state.actual_vy = position.vy;
+            state.actual_vz = position.vz;
+            state.actual_velocity_valid = true;
+            mark(state.altitude, now);
+            break;
+        }
+        default:
+            break;
     }
-    if (have_target && target.valid) {
-        os << ",\"target_detected\":" << (target.found ? "true" : "false")
-           << ",\"target_x_px\":" << target.x_px << ",\"target_y_px\":" << target.y_px
-           << ",\"target_distance_m\":" << target.distance_m;
-    } else {
-        os << ",\"target_detected\":null";
+}
+
+std::string json_escape(const std::string& value) {
+    std::ostringstream out;
+    for (const unsigned char ch : value) {
+        if (ch == '\\') out << "\\\\";
+        else if (ch == '"') out << "\\\"";
+        else if (ch == '\n') out << "\\n";
+        else out << ch;
     }
-    os << "}";
-    return os.str();
+    return out.str();
+}
+
+std::string nullable_float(float value) {
+    if (!std::isfinite(value)) return "null";
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(3) << value;
+    return out.str();
+}
+
+std::string make_json(uint32_t seq, const VehicleState& vehicle,
+                      const TargetRangeMsg& target, bool have_target,
+                      const GcsCommandStateMsg& command, bool have_command,
+                      Clock::time_point now) {
+    const auto unix_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    const double heartbeat_age = age_ms(vehicle.heartbeat, now);
+    const bool telemetry_fresh = heartbeat_age >= 0.0 && heartbeat_age <= 3000.0;
+    const bool target_found = have_target && target.found != 0;
+    const bool target_confirmed = target_found && target.confirmed != 0;
+    const std::string state_name = have_command && command.state[0] != '\0'
+                                       ? command.state
+                                       : vehicle.mode;
+    std::ostringstream out;
+    out << "{\"protocol\":\"astrodrone-gcs-v1\",\"seq\":" << seq
+        << ",\"timestamp_ms\":" << unix_ms
+        << ",\"state\":\"" << json_escape(state_name)
+        << "\",\"mode\":\"" << json_escape(vehicle.mode)
+        << "\",\"armed\":" << (vehicle.armed ? "true" : "false")
+        << ",\"altitude_m\":" << vehicle.altitude_m
+        << ",\"heartbeat_age_ms\":" << heartbeat_age
+        << ",\"gps_fix\":" << vehicle.gps_fix
+        << ",\"gps_satellites\":" << vehicle.gps_satellites
+        << ",\"ekf_healthy\":" << (vehicle.ekf_valid ? "true" : "false")
+        << ",\"battery_voltage_v\":" << vehicle.battery_voltage
+        << ",\"battery_percent\":" << vehicle.battery_percent
+        << ",\"telemetry_fresh\":" << (telemetry_fresh ? "true" : "false")
+        << ",\"target_found\":" << (target_found ? "true" : "false")
+        << ",\"target_confirmed\":" << (target_confirmed ? "true" : "false")
+        << ",\"target_x_px\":" << (target_found ? std::to_string(target.x_px) : "null")
+        << ",\"target_y_px\":" << (target_found ? std::to_string(target.y_px) : "null")
+        << ",\"bbox_x_px\":" << (target_found ? std::to_string(target.bbox_x_px) : "null")
+        << ",\"bbox_y_px\":" << (target_found ? std::to_string(target.bbox_y_px) : "null")
+        << ",\"bbox_width_px\":" << (target_found ? std::to_string(target.bbox_width_px) : "null")
+        << ",\"bbox_height_px\":" << (target_found ? std::to_string(target.bbox_height_px) : "null")
+        << ",\"target_width_px\":" << (target_found ? std::to_string(target.bbox_width_px) : "null")
+        << ",\"target_height_px\":" << (target_found ? std::to_string(target.bbox_height_px) : "null")
+        << ",\"target_confidence\":" << (target_found ? nullable_float(target.target_confidence) : "null")
+        << ",\"target_class\":\"" << (target_found ? json_escape(target.class_name) : "") << "\""
+        << ",\"target_distance_m\":" << (target_found ? std::to_string(target.distance_m) : "null")
+        << ",\"frame_sequence\":" << (target_found ? std::to_string(target.frame_sequence) : "null")
+        << ",\"frame_timestamp_ns\":" << (target_found ? std::to_string(target.frame_timestamp_ns) : "null")
+        << ",\"frame_width\":" << (target_found ? std::to_string(target.frame_width) : "null")
+        << ",\"frame_height\":" << (target_found ? std::to_string(target.frame_height) : "null")
+        << ",\"frame_source\":\"" << (target_found ? json_escape(target.source) : "") << "\""
+        // Command setpoints come only from the local non-MAVLink command-state
+        // publisher. They are never inferred from telemetry or re-sent to the
+        // vehicle.
+        << ",\"vx\":" << (have_command ? std::to_string(command.vx) : "null")
+        << ",\"vy\":" << (have_command ? std::to_string(command.vy) : "null")
+        << ",\"vz\":" << (have_command ? std::to_string(command.vz) : "null")
+        << ",\"command_path_angle_rad\":"
+        << (have_command ? std::to_string(command.path_angle_rad) : "null")
+        << ",\"command_allowed\":"
+        << (have_command && command.allowed ? "true" : "false")
+        << ",\"command_state\":\""
+        << (have_command ? json_escape(command.state) : "") << "\""
+        << ",\"command_safety_reason\":\""
+        << (have_command ? json_escape(command.safety_reason) : "") << "\""
+        << ",\"actual_vx\":" << (vehicle.actual_velocity_valid ? std::to_string(vehicle.actual_vx) : "null")
+        << ",\"actual_vy\":" << (vehicle.actual_velocity_valid ? std::to_string(vehicle.actual_vy) : "null")
+        << ",\"actual_vz\":" << (vehicle.actual_velocity_valid ? std::to_string(vehicle.actual_vz) : "null")
+        << ",\"safety_reason\":\""
+        << (telemetry_fresh ? "" : "heartbeat_stale") << "\"}";
+    return out.str();
 }
 
 }  // namespace
 
-int main() {
-    std::signal(SIGINT, on_sigint);
+int main(int argc, char** argv) {
+    try {
+        std::signal(SIGINT, on_signal);
+        std::signal(SIGTERM, on_signal);
+        const Args args = parse_args(argc, argv);
+        const YamlValue cfg = load_gcs_yaml();
+        const YamlValue& telem = cfg["telemetry"];
+        const char* env_dest_host = std::getenv("GCS_TELEMETRY_HOST");
+        const char* env_dest_port = std::getenv("GCS_TELEMETRY_PORT");
+        const std::string dest_host = env_dest_host && *env_dest_host
+                                          ? env_dest_host
+                                          : telem.get_string_or("dest_host", "127.0.0.1");
+        const uint16_t dest_port = static_cast<uint16_t>(
+            env_dest_port && *env_dest_port
+                ? std::stoul(env_dest_port)
+                : telem.get_long_or("dest_port", 15550));
+        const uint8_t lanes = static_cast<uint8_t>(telem.get_long_or("lanes", 3));
+        const uint8_t group_size = static_cast<uint8_t>(telem.get_long_or("group_size", 4));
+        const int rate_hz = static_cast<int>(telem.get_long_or("rate_hz", 6));
+        const int target_udp_port = static_cast<int>(
+            telem.get_long_or("target_udp_port", 15020));
 
-    YamlValue cfg = load_gcs_yaml();
-    const YamlValue& telem = cfg["telemetry"];
-    const std::string dest_host = telem["dest_host"].as_string();
-    const long dest_port = telem["dest_port"].as_long();
-    const long lanes = telem.get_long_or("lanes", 3);
-    const long group_size = telem.get_long_or("group_size", 4);
-    const long rate_hz = telem.get_long_or("rate_hz", 10);
+        auto mav = open_connection(args.telemetry_endpoint);
+        gcs::UdpSender udp(dest_host, dest_port);
+        gcs::FecEncoder encoder(lanes, group_size,
+            [&udp](const uint8_t* data, size_t len) { udp.send(data, len); });
+        TargetRangeReceiver target_rx(target_udp_port);
+        GcsCommandStateReceiver command_rx(static_cast<int>(
+            telem.get_long_or("command_state_udp_port", 15021)));
+        VehicleState vehicle;
+        TargetRangeMsg target{};
+        GcsCommandStateMsg command{};
+        bool have_target = false;
+        bool have_command = false;
+        uint32_t sequence = 0;
+        const auto start = Clock::now();
+        const auto period = std::chrono::milliseconds(std::max(1, 1000 / rate_hz));
 
-    YamlValue mav_cfg = drone::load_mavlink_settings();
-    YamlValue serial = mav_cfg["real"]["serial"];
-    const double heartbeat_timeout = mav_cfg.get_double_or("heartbeat_timeout", 20);
-    const long target_udp_port = mav_cfg["target_track"].get_long_or("udp_port", 15020);
-
-    std::fprintf(stderr, "telem_sender: -> %s:%ld lanes=%ld group_size=%ld rate=%ldhz\n",
-                 dest_host.c_str(), dest_port, lanes, group_size, rate_hz);
-
-    auto mav = connect_mavlink(serial, heartbeat_timeout);
-    if (!mav) {
-        std::fprintf(stderr, "telem_sender: stopped before a Pixhawk connection was made\n");
-        return 0;
-    }
-    request_message_interval(*mav, MAVLINK_MSG_ID_ALTITUDE, static_cast<double>(rate_hz));
-
-    TargetRangeReceiver target_rx(static_cast<int>(target_udp_port));
-
-    gcs::UdpSender udp(dest_host, static_cast<uint16_t>(dest_port));
-    gcs::FecEncoder enc(static_cast<uint8_t>(lanes), static_cast<uint8_t>(group_size),
-                         [&udp](const uint8_t* data, size_t len) { udp.send(data, len); });
-
-    const auto period = std::chrono::microseconds(1000000 / rate_hz);
-    const double poll_timeout_s = std::min(0.02, 1.0 / static_cast<double>(rate_hz) / 4.0);
-
-    VehicleState vehicle;
-    TargetRangeMsg target{};
-    bool have_target = false;
-
-    uint32_t seq = 0;
-    uint32_t sent_count = 0;
-    while (!g_stop) {
-        const auto next_tick = std::chrono::steady_clock::now() + period;
-
-        // Opportunistic, short-timeout drain -- doesn't block the telemetry
-        // rate waiting for MAVLink; a message not seen this tick is just
-        // picked up next tick (this feed is for status/debugging, not
-        // control, so a tick or two of staleness is fine).
-        //
-        // recv_match can throw if the underlying transport read fails (the
-        // serial device node disappearing mid-run -- USB unplug/reset is
-        // the real-world case this guards against). Reconnecting here
-        // rather than letting the exception escape is the whole point of
-        // this loop: a telemetry/debug feed should degrade (link_ok=false
-        // downstream) and keep trying, not take the process down.
-        try {
-            mavlink_message_t msg;
-            if (mav->recv_match({MAVLINK_MSG_ID_HEARTBEAT, MAVLINK_MSG_ID_ALTITUDE}, msg, poll_timeout_s)) {
-                if (msg.msgid == MAVLINK_MSG_ID_HEARTBEAT) {
-                    mavlink_heartbeat_t hb;
-                    mavlink_msg_heartbeat_decode(&msg, &hb);
-                    vehicle.mode = mode_string(hb.custom_mode);
-                    vehicle.armed = is_armed_from_heartbeat(hb);
-                    vehicle.have_heartbeat = true;
-                }
-                // ALTITUDE is requested above so target_distance.cpp (if
-                // also running) isn't the only consumer, but we don't
-                // decode it here -- target.altitude_m via TargetRangeMsg
-                // below already carries it, computed from the same stream.
+        std::cout << "telem_sender: UDP telemetry=" << args.telemetry_endpoint
+                  << " destination=" << dest_host << ":" << dest_port
+                  << " rate=" << rate_hz << "Hz (read-only)" << std::endl;
+        while (!g_stop && (args.duration_sec <= 0.0 ||
+                           std::chrono::duration<double>(Clock::now() - start).count() < args.duration_sec)) {
+            const auto tick = Clock::now();
+            mavlink_message_t message{};
+            while (mav->recv_match({}, message, 0.001)) {
+                consume_mavlink(message, vehicle, Clock::now());
             }
-        } catch (const std::exception& e) {
-            std::fprintf(stderr, "telem_sender: MAVLink read error (%s), reconnecting...\n", e.what());
-            vehicle.have_heartbeat = false;
-            mav = connect_mavlink(serial, heartbeat_timeout);
-            if (!mav) break;  // g_stop was set while reconnecting
-            request_message_interval(*mav, MAVLINK_MSG_ID_ALTITUDE, static_cast<double>(rate_hz));
+            if (target_rx.poll(target)) have_target = true;
+            if (command_rx.poll(command)) have_command = true;
+            const std::string payload = make_json(sequence++, vehicle, target, have_target,
+                                                  command, have_command, Clock::now());
+            if (payload.size() > gcs::kMaxPayload) {
+                throw std::runtime_error("telemetry JSON exceeds the FEC payload limit");
+            }
+            encoder.submit(reinterpret_cast<const uint8_t*>(payload.data()),
+                           static_cast<uint16_t>(payload.size()));
+            std::this_thread::sleep_until(tick + period);
         }
-        if (target_rx.poll(target)) {
-            have_target = true;
-        }
-
-        const std::string payload = make_telemetry_json(seq, vehicle, target, have_target);
-        enc.submit(reinterpret_cast<const uint8_t*>(payload.data()),
-                   static_cast<uint16_t>(payload.size()));
-
-        ++sent_count;
-        if (sent_count % (static_cast<uint32_t>(rate_hz) * 5) == 0) {
-            std::fprintf(stderr, "telem_sender: sent %u messages (mode=%s armed=%d)\n", sent_count,
-                         vehicle.mode.c_str(), vehicle.armed);
-        }
-
-        ++seq;
-        std::this_thread::sleep_until(next_tick);
+        encoder.flush();
+        return 0;
+    } catch (const std::exception& error) {
+        std::cerr << "telem_sender: " << error.what() << std::endl;
+        return 1;
     }
-
-    enc.flush();
-    std::fprintf(stderr, "telem_sender: stopped after %u messages\n", sent_count);
-    return 0;
 }
