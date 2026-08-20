@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd -P)"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/project-env.sh"
+
+profile="${DRONE_PROFILE:-observe}"
+fixed_basket=0
+build_only=0
+forward_args=()
+while (( $# )); do
+  case "$1" in
+    --profile|--mode)
+      [[ $# -ge 2 ]] || { printf '%s\n' "$1 requires a value" >&2; exit 2; }
+      profile="$2"
+      shift 2
+      ;;
+    --fixed-basket)
+      fixed_basket=1
+      shift
+      ;;
+    --build-only)
+      build_only=1
+      forward_args+=(--build-only)
+      shift
+      ;;
+    *)
+      forward_args+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if (( build_only )) && [[ "$profile" == observe ]]; then
+  profile=sitl
+fi
+
+case "$profile" in
+  flight)
+    printf '%s\n' '[autonomy-cpp] flight profile is explicitly disabled; no vehicle-affecting runtime is started.' >&2
+    exit 2
+    ;;
+  observe)
+    printf '%s\n' '[autonomy-cpp] observe profile: path, custom world, camera and dependency report only.'
+    print_dependency_report
+    printf '%s\n' '[autonomy-cpp] no C++ control, ARM, takeoff, LAND, velocity or serial process started.'
+    exit 0
+    ;;
+  shadow)
+    printf '%s\n' '[autonomy-cpp] shadow profile: using the repository read-only telemetry checker.'
+    exec "$REPO_ROOT/simulation/scripts/run_control_shadow.sh"
+    ;;
+  jetson)
+    printf '%s\n' '[autonomy-cpp] jetson profile: dependency and camera/serial configuration report only.'
+    print_dependency_report
+    printf '%s\n' '[autonomy-cpp] no Gazebo, Mission Planner, MAVLink or vehicle-control process started.'
+    exit 0
+    ;;
+  sitl)
+    ;;
+  real)
+    if [[ "${ASTRODRONE_TARGET:-}" != real ]]; then
+      printf '%s\n' '[autonomy-cpp] real profile requires ASTRODRONE_TARGET=real.' >&2
+      exit 2
+    fi
+    ;;
+  *)
+    printf '%s\n' "[autonomy-cpp] unknown profile '$profile' (use observe, shadow, sitl, jetson or flight)." >&2
+    exit 2
+    ;;
+esac
+
+export DRONE_PROFILE="$profile"
+if (( build_only )); then
+  "$SCRIPT_DIR/target-distance-cpp" --build-only
+  "$SCRIPT_DIR/control-cpp" --build-only
+  exit 0
+fi
+mkdir -p -- "$LOG_DIR"
+runtime_log="$LOG_DIR/autonomy_$(date +%Y%m%d_%H%M%S).log"
+exec > >(tee -a "$runtime_log") 2>&1
+printf '[autonomy-cpp] profile=%s target=%s runtime log=%s\n' \
+  "$profile" "${ASTRODRONE_TARGET:-sitl}" "$runtime_log"
+printf '[autonomy-cpp] custom world=%s camera=%s target=%s\n' "$SIM_WORLD" "$CAMERA_TOPIC" "$TARGET_MODEL_DIR"
+
+target_args=()
+control_args=()
+if [[ -n "${TARGET_DISTANCE_ARGS:-}" ]]; then
+  # shellcheck disable=SC2206
+  target_args=(${TARGET_DISTANCE_ARGS})
+fi
+if [[ -n "${CONTROL_ARGS:-}" ]]; then
+  # shellcheck disable=SC2206
+  control_args=(${CONTROL_ARGS})
+fi
+if (( fixed_basket )); then
+  fixed_target_north="${FIXED_TARGET_NORTH_M:-4}"
+  fixed_target_east="${FIXED_TARGET_EAST_M:-0}"
+  fixed_target_min_alt="${FIXED_TARGET_MIN_ALT_M:-4.5}"
+  target_args+=(--fixed-target-ned "$fixed_target_north" "$fixed_target_east"
+                --fixed-target-min-alt "$fixed_target_min_alt")
+fi
+target_args+=("${forward_args[@]}")
+
+pids=()
+pids_names=()
+cleanup() {
+  local pid
+  for pid in "${pids[@]:-}"; do
+    if kill -0 "$pid" >/dev/null 2>&1; then
+      kill "$pid" >/dev/null 2>&1 || true
+    fi
+  done
+}
+trap cleanup INT TERM EXIT
+
+printf '[autonomy-cpp] target-distance args:'; printf ' %q' "${target_args[@]}"; printf '\n'
+if [[ -n "${AUTONOMY_CONTROL_GATE_FILE:-}" ]]; then
+  printf '[autonomy-cpp] waiting for control gate: %s\n' "$AUTONOMY_CONTROL_GATE_FILE"
+  while [[ ! -e "$AUTONOMY_CONTROL_GATE_FILE" ]]; do
+    sleep 0.2
+  done
+  printf '[autonomy-cpp] control gate opened: %s\n' "$AUTONOMY_CONTROL_GATE_FILE"
+fi
+"$SCRIPT_DIR/target-distance-cpp" "${target_args[@]}" & pids+=("$!")
+pids_names+=(target-distance)
+"$SCRIPT_DIR/control-cpp" "${control_args[@]}" & pids+=("$!")
+pids_names+=(control)
+printf '%s\n' '[autonomy-cpp] SITL control and target-distance processes running; Ctrl+C stops both.'
+
+while true; do
+  for index in "${!pids[@]}"; do
+    pid="${pids[$index]}"
+    if ! kill -0 "$pid" >/dev/null 2>&1; then
+      set +e
+      wait "$pid"
+      status=$?
+      set -e
+      name="${pids_names[$index]}"
+      if (( status >= 128 )); then
+        printf '[autonomy-cpp] child exited by signal: %s status=%s signal=%s\n' \
+          "$name" "$status" "$((status - 128))" >&2
+      else
+        printf '[autonomy-cpp] child exited: %s status=%s\n' "$name" "$status" >&2
+      fi
+      if [[ "${SITL_TARGET_LOSS_POLICY:-}" == LAND &&
+            "${SITL_LAND_OBSERVATION_SEC:-0}" =~ ^[0-9]+([.][0-9]+)?$ &&
+            "${SITL_LAND_OBSERVATION_SEC:-0}" != 0 ]]; then
+        printf '[autonomy-cpp] LAND scenario observation hold=%ss\n' \
+          "$SITL_LAND_OBSERVATION_SEC"
+        sleep "$SITL_LAND_OBSERVATION_SEC"
+      fi
+      exit "$status"
+    fi
+  done
+  sleep 0.5
+done

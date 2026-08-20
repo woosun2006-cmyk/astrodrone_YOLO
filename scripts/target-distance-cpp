@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd -P)"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/project-env.sh"
+
+profile="${DRONE_PROFILE:-observe}"
+case "$profile" in
+  sitl|real) ;;
+  flight)
+    printf '%s\n' '[target-distance-cpp] flight profile is explicitly disabled.' >&2
+    exit 2
+    ;;
+  *)
+    printf '%s\n' "[target-distance-cpp] profile '$profile' cannot open a MAVLink SITL stream; use DRONE_PROFILE=sitl for loopback SITL only." >&2
+    exit 2
+    ;;
+esac
+
+for source_file in target_distance.cpp autopilot/runtime_transport.cpp drone_lib.cpp mav_transport.cpp yaml_settings.cpp \
+                   target_link.cpp pos_calculator.cpp target_json.cpp; do
+  [[ -f "$CONTROL_DIR/$source_file" ]] || { printf 'missing control source: %s\n' "$CONTROL_DIR/$source_file" >&2; exit 1; }
+done
+[[ -f "$SETTING_DIR/MAVLink.yaml" ]] || { printf 'missing settings: %s/MAVLink.yaml\n' "$SETTING_DIR" >&2; exit 1; }
+command -v g++ >/dev/null 2>&1 || { printf '%s\n' 'g++ is required; install with: sudo apt install build-essential' >&2; exit 1; }
+
+mkdir -p -- "$BUILD_DIR"
+target_binary="$BUILD_DIR/target_distance"
+needs_build=0
+if [[ ! -x "$target_binary" ]]; then
+  needs_build=1
+elif find "$CONTROL_DIR" "$SETTING_DIR/MAVLink.yaml" -type f -newer "$target_binary" -print -quit | grep -q .; then
+  needs_build=1
+fi
+
+if (( needs_build == 1 )); then
+  g++ -std=c++17 -O2 -Wno-address-of-packed-member -I"$CONTROL_DIR" \
+    "$CONTROL_DIR/target_distance.cpp" \
+    "$CONTROL_DIR/autopilot/runtime_transport.cpp" \
+    "$CONTROL_DIR/drone_lib.cpp" \
+    "$CONTROL_DIR/mav_transport.cpp" \
+    "$CONTROL_DIR/yaml_settings.cpp" \
+    "$CONTROL_DIR/target_link.cpp" \
+    "$CONTROL_DIR/pos_calculator.cpp" \
+    "$CONTROL_DIR/target_json.cpp" \
+    -pthread \
+    -o "$target_binary"
+else
+  printf '[target-distance-cpp] using up-to-date binary: %s\n' "$target_binary"
+fi
+
+if [[ "${1:-}" == '--build-only' ]]; then
+  exit 0
+fi
+
+printf '[target-distance-cpp] profile=%s target=%s endpoint=%s target_udp=%s\n' \
+  "$profile" "${ASTRODRONE_TARGET:-sitl}" "${SITL_SENSOR_ENDPOINT:-runtime}" "$TARGET_UDP_ENDPOINT"
+exec "$BUILD_DIR/target_distance" "$@"

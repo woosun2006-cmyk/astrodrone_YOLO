@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd -P)"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/project-env.sh"
+
+profile="${DRONE_PROFILE:-observe}"
+case "$profile" in
+  sitl|real) ;;
+  flight)
+    printf '%s\n' '[control-cpp] flight profile is explicitly disabled.' >&2
+    exit 2
+    ;;
+  *)
+    printf '%s\n' "[control-cpp] profile '$profile' cannot run vehicle-affecting control; use DRONE_PROFILE=sitl for loopback SITL only." >&2
+    exit 2
+    ;;
+esac
+
+[[ -f "$CONTROL_DIR/control.cpp" ]] || { printf 'missing control source: %s\n' "$CONTROL_DIR/control.cpp" >&2; exit 1; }
+[[ -f "$SETTING_DIR/MAVLink.yaml" ]] || { printf 'missing settings: %s/MAVLink.yaml\n' "$SETTING_DIR" >&2; exit 1; }
+command -v g++ >/dev/null 2>&1 || { printf '%s\n' 'g++ is required; install with: sudo apt install build-essential' >&2; exit 1; }
+
+mkdir -p -- "$BUILD_DIR"
+control_binary="$BUILD_DIR/control"
+needs_build=0
+if [[ ! -x "$control_binary" ]]; then
+  needs_build=1
+elif find "$CONTROL_DIR" "$SETTING_DIR/MAVLink.yaml" -type f -newer "$control_binary" -print -quit | grep -q .; then
+  needs_build=1
+fi
+
+if (( needs_build == 1 )); then
+  g++ -std=c++17 -O2 -Wno-address-of-packed-member -I"$CONTROL_DIR" \
+    "$CONTROL_DIR/control.cpp" \
+    "$CONTROL_DIR/autopilot/runtime_transport.cpp" \
+    "$CONTROL_DIR/autopilot/real_flight_guard.cpp" \
+    "$CONTROL_DIR/drone_lib.cpp" \
+    "$CONTROL_DIR/logging/command_audit_logger.cpp" \
+    "$CONTROL_DIR/mav_transport.cpp" \
+    "$CONTROL_DIR/safety/control_authority.cpp" \
+    "$CONTROL_DIR/safety/flight_state.cpp" \
+    "$CONTROL_DIR/safety/health_monitor.cpp" \
+    "$CONTROL_DIR/safety/preflight_gate.cpp" \
+    "$CONTROL_DIR/yaml_settings.cpp" \
+    "$CONTROL_DIR/target_link.cpp" \
+    "$CONTROL_DIR/pos_calculator.cpp" \
+    "$CONTROL_DIR/mission/pixel_guidance.cpp" \
+    "$CONTROL_DIR/mission/diagonal_approach_guidance.cpp" \
+    -pthread \
+    -o "$control_binary"
+else
+  printf '[control-cpp] using up-to-date binary: %s\n' "$control_binary"
+fi
+
+if [[ "${1:-}" == '--build-only' ]]; then
+  exit 0
+fi
+
+printf '[control-cpp] profile=%s target=%s binary=%s\n' "$profile" "${ASTRODRONE_TARGET:-sitl}" "$BUILD_DIR/control"
+exec "$BUILD_DIR/control" "$@"

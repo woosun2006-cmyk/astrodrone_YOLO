@@ -1,0 +1,18 @@
+target: sitl
+command:
+  mode: flight
+transport:
+  command_endpoint: udp:127.0.0.1:14550
+  telemetry_endpoint: udp:127.0.0.1:14551
+  baud: 115200
+  serial_owner: none
+camera:
+  source: gazebo
+flight:
+  commands_enabled: true
+  allow_mavlink_writes: true
+  allow_vehicle_commands: true
+  allow_arm: true
+  allow_telemetry_configuration: true
+  requires_allow_arm: false
+  requires_confirm_real_flight: false

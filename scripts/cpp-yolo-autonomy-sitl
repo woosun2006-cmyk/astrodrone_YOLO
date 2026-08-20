@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd -P)"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/project-env.sh"
+
+if (( $# > 0 )) && [[ "$1" == "--fixed-basket" ]]; then
+  printf '%s\n' '[cpp-yolo-autonomy-sitl] --fixed-basket bypasses YOLO; use autonomy-cpp directly for that test.' >&2
+  exit 2
+fi
+
+mkdir -p -- "$LOG_DIR"
+yolo_log_prefix="$LOG_DIR/yolo_cpp_$(date +%Y%m%d_%H%M%S)"
+yolo_stdout_log="${yolo_log_prefix}.stdout.log"
+yolo_stderr_log="${yolo_log_prefix}.stderr.log"
+yolo_ready_file="${YOLO_READY_FILE:-}"
+yolo_control_gate_file="${AUTONOMY_CONTROL_GATE_FILE:-}"
+yolo_pid=""
+
+cleanup() {
+  if [[ -n "$yolo_pid" ]] && kill -0 "$yolo_pid" >/dev/null 2>&1; then
+    kill "$yolo_pid" >/dev/null 2>&1 || true
+    wait "$yolo_pid" 2>/dev/null || true
+  fi
+}
+trap cleanup INT TERM EXIT
+
+printf '[cpp-yolo-autonomy-sitl] YOLO stdout=%s stderr=%s\n' \
+  "$yolo_stdout_log" "$yolo_stderr_log"
+export GCS_VIDEO_ENABLED="${GCS_VIDEO_ENABLED:-1}"
+export GCS_VIDEO_ANNOTATED="${GCS_VIDEO_ANNOTATED:-0}"
+"$YOLO_DIR/cpp/run_yolo_live.sh" \
+  --frame-source gazebo \
+  --gazebo-topic "$CAMERA_TOPIC" \
+  --onnx "$YOLO_ONNX_PATH" \
+  --engine "$YOLO_ENGINE_PATH" \
+  >"$yolo_stdout_log" 2>"$yolo_stderr_log" &
+yolo_pid=$!
+
+ready=0
+ready_timeout="${YOLO_READY_TIMEOUT_SEC:-90}"
+[[ "$ready_timeout" =~ ^[0-9]+$ ]] || {
+  printf '[cpp-yolo-autonomy-sitl] invalid YOLO_READY_TIMEOUT_SEC=%s\n' "$ready_timeout" >&2
+  exit 2
+}
+for _ in $(seq 1 "$((ready_timeout * 2))"); do
+  if ! kill -0 "$yolo_pid" >/dev/null 2>&1; then
+    set +e
+    wait "$yolo_pid"
+    yolo_status=$?
+    set -e
+    printf '[cpp-yolo-autonomy-sitl] shadow pipeline incomplete: YOLO exited before readiness (status=%s)\n' "$yolo_status" >&2
+    printf '[cpp-yolo-autonomy-sitl] YOLO stdout=%s stderr=%s\n' "$yolo_stdout_log" "$yolo_stderr_log" >&2
+    exit 1
+  fi
+  if ss -H -lnt 2>/dev/null | awk '$4 ~ /^127\.0\.0\.1:8002$/ { found=1 } END { exit(found ? 0 : 1) }'; then
+    ready=1
+    break
+  fi
+  sleep 0.5
+done
+
+if (( ready == 0 )); then
+  printf '[cpp-yolo-autonomy-sitl] shadow pipeline incomplete: YOLO HTTP readiness timeout after %ss; control will not start.\n' "$ready_timeout" >&2
+  printf '[cpp-yolo-autonomy-sitl] YOLO stdout=%s stderr=%s\n' "$yolo_stdout_log" "$yolo_stderr_log" >&2
+  exit 1
+fi
+
+if [[ -n "$yolo_ready_file" ]]; then
+  mkdir -p -- "$(dirname -- "$yolo_ready_file")"
+  printf 'ready=1\nendpoint=http://127.0.0.1:8002\nstdout=%s\nstderr=%s\n' \
+    "$yolo_stdout_log" "$yolo_stderr_log" >"$yolo_ready_file"
+fi
+printf '[cpp-yolo-autonomy-sitl] YOLO_READY endpoint=http://127.0.0.1:8002 stdout=%s stderr=%s\n' \
+  "$yolo_stdout_log" "$yolo_stderr_log"
+
+if [[ -n "$yolo_control_gate_file" ]]; then
+  printf '[cpp-yolo-autonomy-sitl] waiting for mission/ARM setup gate: %s\n' \
+    "$yolo_control_gate_file"
+  while [[ ! -e "$yolo_control_gate_file" ]]; do
+    if ! kill -0 "$yolo_pid" >/dev/null 2>&1; then
+      printf '%s\n' '[cpp-yolo-autonomy-sitl] shadow pipeline incomplete: YOLO exited before control gate opened.' >&2
+      exit 1
+    fi
+    sleep 0.2
+  done
+  printf '[cpp-yolo-autonomy-sitl] control gate opened: %s\n' "$yolo_control_gate_file"
+fi
+
+printf '%s\n' '[cpp-yolo-autonomy-sitl] starting C++ target-distance/control'
+set +e
+"$SCRIPT_DIR/autonomy-cpp" --profile sitl "$@"
+status=$?
+set -e
+exit "$status"

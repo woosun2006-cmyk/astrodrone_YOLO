@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd -P)"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/project-env.sh"
+
+[[ -f "$YOLO_MODEL_PATH" ]] || { printf 'YOLO model not found: %s\n' "$YOLO_MODEL_PATH" >&2; exit 1; }
+[[ -f "$YOLO_GAZEBO_SCRIPT" ]] || { printf 'Gazebo YOLO script not found: %s\n' "$YOLO_GAZEBO_SCRIPT" >&2; exit 1; }
+[[ -x "$YOLO_VENV/bin/python" ]] || { printf 'Python venv not found: %s\n' "$YOLO_VENV/bin/python" >&2; exit 1; }
+
+export YOLOV5_DIR YOLO_WEIGHTS="$YOLO_MODEL_PATH"
+exec "$YOLO_VENV/bin/python" -u "$YOLO_GAZEBO_SCRIPT" \
+  --weights "$YOLO_MODEL_PATH" \
+  --device "${YOLO_DEVICE:-0}" \
+  --port 5600 \
+  --enable-topic "$CAMERA_TOPIC/enable_streaming" \
+  --handoff-on-detect \
+  --mavlink "$MAVPROXY_CONTROL_ENDPOINT" \
+  --no-view \
+  "$@"
