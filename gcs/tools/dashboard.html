@@ -186,10 +186,10 @@ function drawOverlay(t) {
     : frameHeight / 2 - Number(t.target_y_px ?? 0) - h / 2;
   const left = offsetX + sourceX * scale;
   const top = offsetY + sourceY * scale;
-  ctx.strokeStyle = '#35c46a';
+  ctx.strokeStyle = '#e5484d';
   ctx.lineWidth = 2;
   ctx.strokeRect(left, top, w * scale, h * scale);
-  ctx.fillStyle = '#35c46a';
+  ctx.fillStyle = '#e5484d';
   ctx.font = '14px sans-serif';
   ctx.fillText(`${t.target_class || 'target'} ${fmt(t.target_confidence, 2)}`, left, Math.max(16, top - 4));
 }

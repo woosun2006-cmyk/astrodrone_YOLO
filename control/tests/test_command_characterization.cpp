@@ -1,8 +1,9 @@
 #define main astrodrone_control_main_for_characterization
-#include "../control.cpp"
+#include "../app/flight_mission_app.cpp"
 #undef main
 
-#include "../autopilot/command_sender.hpp"
+#include "../autopilot/autopilot_mavlink_adapter.hpp"
+#include "test_mavlink_sender.hpp"
 #include "fake_transport.hpp"
 
 #include <cmath>
@@ -177,10 +178,16 @@ bool control_message_interval_keeps_current_fields() {
     auto transport = std::make_unique<FakeTransport>();
     FakeTransport* fake = transport.get();
     transport->queue_incoming_message(autopilot_heartbeat());
-    MavConnection connection(std::move(transport));
-    CHECK(connection.wait_heartbeat(0.1));
+    app::RuntimeConfig config{
+        app::RuntimeTarget::Sitl,
+        app::TransportRole::CommandOwner,
+        "fake:command-characterization"};
+    config.allow_telemetry_configuration = true;
+    autopilot::AutopilotMavlinkAdapter adapter(
+        std::make_unique<MavConnection>(std::move(transport)), config);
+    CHECK(adapter.wait_heartbeat(0.1));
 
-    request_message_interval(connection, MAVLINK_MSG_ID_SYS_STATUS, 5.0);
+    CHECK(adapter.request_message_interval(MAVLINK_MSG_ID_SYS_STATUS, 5.0));
     CHECK(fake->write_call_count() == 1);
     const std::vector<mavlink_message_t> messages = fake->decode_written_messages();
     CHECK(messages.size() == 1);
@@ -205,8 +212,8 @@ bool command_sender_keeps_existing_packet_order() {
     CHECK(g_opened_transport != nullptr);
     g_opened_transport->clear_written();
 
-    autopilot::CommandGate gate;
-    autopilot::CommandSender sender(connection, gate);
+    safety::SafetyMonitor monitor;
+    test::TestPacketSender sender(connection, monitor);
     CHECK(sender.set_mode("GUIDED"));
     CHECK(sender.arm_disarm(true));
     CHECK(sender.takeoff(6.5));
@@ -263,12 +270,12 @@ bool locked_authority_blocks_every_vehicle_command() {
     CHECK(g_opened_transport != nullptr);
     g_opened_transport->clear_written();
 
-    std::vector<autopilot::CommandDecision> decisions;
-    autopilot::CommandGate gate;
-    gate.set_control_locked(true);
-    autopilot::CommandSender sender(
-        connection, gate,
-        [&](const autopilot::CommandDecision& decision) { decisions.push_back(decision); });
+    std::vector<safety::CommandDecision> decisions;
+    safety::SafetyMonitor monitor;
+    monitor.set_control_locked(true);
+    test::TestPacketSender sender(
+        connection, monitor,
+        [&](const safety::CommandDecision& decision) { decisions.push_back(decision); });
 
     const auto mode = sender.set_mode("GUIDED");
     const auto arm = sender.arm_disarm(true);
@@ -280,12 +287,12 @@ bool locked_authority_blocks_every_vehicle_command() {
     for (const auto& decision : {mode, arm, takeoff, velocity, zero, land}) {
         CHECK(!decision.allowed);
         CHECK(!decision.sent);
-        CHECK(decision.block_reason == autopilot::GateBlockReason::ControlLocked);
+        CHECK(decision.block_reason == safety::GateBlockReason::ControlLocked);
     }
     CHECK(g_opened_transport->write_call_count() == 0);
     CHECK(decisions.size() == 6);
-    CHECK(decisions[4].type == autopilot::CommandType::VelocitySetpoint);
-    CHECK(decisions[5].type == autopilot::CommandType::Land);
+    CHECK(decisions[4].type == safety::CommandType::VelocitySetpoint);
+    CHECK(decisions[5].type == safety::CommandType::Land);
     return true;
 }
 
@@ -295,24 +302,24 @@ bool authority_change_and_expiry_are_checked_before_send() {
     CHECK(g_opened_transport != nullptr);
     g_opened_transport->clear_written();
 
-    autopilot::CommandGate gate;
-    autopilot::CommandSender sender(connection, gate);
+    safety::SafetyMonitor monitor;
+    test::TestPacketSender sender(connection, monitor);
     CHECK(sender.set_mode("GUIDED"));
     CHECK(g_opened_transport->write_call_count() == 1);
 
-    gate.set_control_locked(true);
+    monitor.set_control_locked(true);
     const auto changed = sender.land();
     CHECK(!changed.allowed);
-    CHECK(changed.block_reason == autopilot::GateBlockReason::ControlLocked);
+    CHECK(changed.block_reason == safety::GateBlockReason::ControlLocked);
     CHECK(g_opened_transport->write_call_count() == 1);
 
-    gate.set_control_locked(false);
-    const auto now = autopilot::CommandRequest::Clock::now();
-    const auto expired = autopilot::CommandRequest::zero_velocity(
+    monitor.set_control_locked(false);
+    const auto now = safety::CommandRequest::Clock::now();
+    const auto expired = safety::CommandRequest::zero_velocity(
         now - std::chrono::seconds(2), now - std::chrono::milliseconds(1));
     const auto stale = sender.send(expired);
     CHECK(!stale.allowed);
-    CHECK(stale.block_reason == autopilot::GateBlockReason::RequestExpired);
+    CHECK(stale.block_reason == safety::GateBlockReason::RequestExpired);
     CHECK(g_opened_transport->write_call_count() == 1);
     return true;
 }

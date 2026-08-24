@@ -3,10 +3,10 @@ set -euo pipefail
 
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd -P)"
+export ASTRODRONE_TARGET=real
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/project-env.sh"
 
-export ASTRODRONE_TARGET=real
 export ASTRODRONE_REPO="$REPO_ROOT"
 export ASTRODRONE_SETTINGS_DIR="${ASTRODRONE_SETTINGS_DIR:-$SETTING_DIR}"
 
@@ -18,20 +18,16 @@ require_loopback_endpoint() {
   }
 }
 
-require_real_router_endpoints() {
-  require_loopback_endpoint "$MAVPROXY_CONTROL_ENDPOINT"
-  require_loopback_endpoint "$MAVPROXY_TELEMETRY_ENDPOINT"
-  [[ "$MAVPROXY_CONTROL_ENDPOINT" == "udp:127.0.0.1:14550" ]] || return 1
-  [[ "$MAVPROXY_TELEMETRY_ENDPOINT" == "udp:127.0.0.1:14551" ]] || return 1
-}
-
-require_no_direct_serial_endpoint() {
-  case "${1:-}" in
-    /dev/tty*|/dev/serial/*|/dev/serial/by-id/*)
-      printf '[실패] 실기체 프로그램은 serial endpoint를 직접 열 수 없습니다: %s\n' "$1" >&2
-      return 1
-      ;;
-  esac
+require_serial_endpoint() {
+  local endpoint="${1:-}"
+  [[ "$endpoint" == /dev/serial/by-id/* && "$endpoint" != *REPLACE_WITH* ]] || {
+    printf '[실패] serial endpoint는 /dev/serial/by-id/...만 허용합니다: %s\n' "$endpoint" >&2
+    return 1
+  }
+  [[ -e "$endpoint" ]] || {
+    printf '[실패] 지정한 serial endpoint가 존재하지 않습니다: %s\n' "$endpoint" >&2
+    return 1
+  }
 }
 
 wait_http_port() {

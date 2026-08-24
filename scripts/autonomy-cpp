@@ -7,7 +7,6 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd -P)"
 source "$SCRIPT_DIR/project-env.sh"
 
 profile="${DRONE_PROFILE:-observe}"
-fixed_basket=0
 build_only=0
 forward_args=()
 while (( $# )); do
@@ -16,10 +15,6 @@ while (( $# )); do
       [[ $# -ge 2 ]] || { printf '%s\n' "$1 requires a value" >&2; exit 2; }
       profile="$2"
       shift 2
-      ;;
-    --fixed-basket)
-      fixed_basket=1
-      shift
       ;;
     --build-only)
       build_only=1
@@ -39,35 +34,35 @@ fi
 
 case "$profile" in
   flight)
-    printf '%s\n' '[autonomy-cpp] flight profile is explicitly disabled; no vehicle-affecting runtime is started.' >&2
+    printf '%s\n' '[실행 거부] flight 프로파일은 비활성화되어 있어 기체 제어를 시작하지 않습니다.' >&2
     exit 2
     ;;
   observe)
-    printf '%s\n' '[autonomy-cpp] observe profile: path, custom world, camera and dependency report only.'
+    printf '%s\n' '[정보] observe 프로파일: 경로, world, 카메라, 의존성만 확인합니다.'
     print_dependency_report
-    printf '%s\n' '[autonomy-cpp] no C++ control, ARM, takeoff, LAND, velocity or serial process started.'
+    printf '%s\n' '[정보] C++ 제어, ARM, takeoff, LAND, velocity, serial 프로세스를 시작하지 않았습니다.'
     exit 0
     ;;
   shadow)
-    printf '%s\n' '[autonomy-cpp] shadow profile: using the repository read-only telemetry checker.'
+    printf '%s\n' '[정보] shadow 프로파일: 읽기 전용 텔레메트리 확인기를 사용합니다.'
     exec "$REPO_ROOT/simulation/scripts/run_control_shadow.sh"
     ;;
   jetson)
-    printf '%s\n' '[autonomy-cpp] jetson profile: dependency and camera/serial configuration report only.'
+    printf '%s\n' '[정보] jetson 프로파일: 의존성과 카메라/serial 설정만 확인합니다.'
     print_dependency_report
-    printf '%s\n' '[autonomy-cpp] no Gazebo, Mission Planner, MAVLink or vehicle-control process started.'
+    printf '%s\n' '[정보] Gazebo, Mission Planner, MAVLink, 기체 제어 프로세스를 시작하지 않았습니다.'
     exit 0
     ;;
   sitl)
     ;;
   real)
     if [[ "${ASTRODRONE_TARGET:-}" != real ]]; then
-      printf '%s\n' '[autonomy-cpp] real profile requires ASTRODRONE_TARGET=real.' >&2
+      printf '%s\n' '[실패] real 프로파일에는 ASTRODRONE_TARGET=real이 필요합니다.' >&2
       exit 2
     fi
     ;;
   *)
-    printf '%s\n' "[autonomy-cpp] unknown profile '$profile' (use observe, shadow, sitl, jetson or flight)." >&2
+    printf '%s\n' "[실패] 알 수 없는 프로파일 '$profile' (observe, shadow, sitl, jetson, flight 중 하나를 사용하세요)." >&2
     exit 2
     ;;
 esac
@@ -81,9 +76,9 @@ fi
 mkdir -p -- "$LOG_DIR"
 runtime_log="$LOG_DIR/autonomy_$(date +%Y%m%d_%H%M%S).log"
 exec > >(tee -a "$runtime_log") 2>&1
-printf '[autonomy-cpp] profile=%s target=%s runtime log=%s\n' \
+printf '[정보] 프로파일=%s 대상=%s 실행 로그=%s\n' \
   "$profile" "${ASTRODRONE_TARGET:-sitl}" "$runtime_log"
-printf '[autonomy-cpp] custom world=%s camera=%s target=%s\n' "$SIM_WORLD" "$CAMERA_TOPIC" "$TARGET_MODEL_DIR"
+printf '[정보] world=%s 카메라=%s 표적 모델=%s\n' "$SIM_WORLD" "$CAMERA_TOPIC" "$TARGET_MODEL_DIR"
 
 target_args=()
 control_args=()
@@ -94,13 +89,6 @@ fi
 if [[ -n "${CONTROL_ARGS:-}" ]]; then
   # shellcheck disable=SC2206
   control_args=(${CONTROL_ARGS})
-fi
-if (( fixed_basket )); then
-  fixed_target_north="${FIXED_TARGET_NORTH_M:-4}"
-  fixed_target_east="${FIXED_TARGET_EAST_M:-0}"
-  fixed_target_min_alt="${FIXED_TARGET_MIN_ALT_M:-4.5}"
-  target_args+=(--fixed-target-ned "$fixed_target_north" "$fixed_target_east"
-                --fixed-target-min-alt "$fixed_target_min_alt")
 fi
 target_args+=("${forward_args[@]}")
 
@@ -116,19 +104,21 @@ cleanup() {
 }
 trap cleanup INT TERM EXIT
 
-printf '[autonomy-cpp] target-distance args:'; printf ' %q' "${target_args[@]}"; printf '\n'
+target_log="${LOG_DIR:-$REPO_ROOT/logs}/target-distance.log"
+printf '[정보] target-distance 상세 로그=%s\n' "$target_log"
 if [[ -n "${AUTONOMY_CONTROL_GATE_FILE:-}" ]]; then
-  printf '[autonomy-cpp] waiting for control gate: %s\n' "$AUTONOMY_CONTROL_GATE_FILE"
+  printf '[대기] control 시작 조건 대기: %s\n' "$AUTONOMY_CONTROL_GATE_FILE"
   while [[ ! -e "$AUTONOMY_CONTROL_GATE_FILE" ]]; do
     sleep 0.2
   done
-  printf '[autonomy-cpp] control gate opened: %s\n' "$AUTONOMY_CONTROL_GATE_FILE"
+  printf '[통과] control 시작 조건 확인: %s\n' "$AUTONOMY_CONTROL_GATE_FILE"
 fi
-"$SCRIPT_DIR/target-distance-cpp" "${target_args[@]}" & pids+=("$!")
+MAVLINK_INPUT_TRACE_LOG="${TARGET_DISTANCE_RAW_INPUT_TRACE_LOG:-${MAVLINK_INPUT_TRACE_LOG:-}}" \
+  "$SCRIPT_DIR/target-distance-cpp" "${target_args[@]}" </dev/null > >(tee -a "$target_log" >/dev/null) 2>&1 & pids+=("$!")
 pids_names+=(target-distance)
 "$SCRIPT_DIR/control-cpp" "${control_args[@]}" & pids+=("$!")
 pids_names+=(control)
-printf '%s\n' '[autonomy-cpp] SITL control and target-distance processes running; Ctrl+C stops both.'
+printf '%s\n' '[정보] control과 target-distance가 실행 중입니다. Ctrl+C로 종료합니다.'
 
 while true; do
   for index in "${!pids[@]}"; do
@@ -140,15 +130,15 @@ while true; do
       set -e
       name="${pids_names[$index]}"
       if (( status >= 128 )); then
-        printf '[autonomy-cpp] child exited by signal: %s status=%s signal=%s\n' \
+        printf '[정보] 하위 프로세스가 신호로 종료되었습니다: 이름=%s 상태=%s 신호=%s\n' \
           "$name" "$status" "$((status - 128))" >&2
       else
-        printf '[autonomy-cpp] child exited: %s status=%s\n' "$name" "$status" >&2
+        printf '[정보] 하위 프로세스 종료: 이름=%s 상태=%s\n' "$name" "$status" >&2
       fi
       if [[ "${SITL_TARGET_LOSS_POLICY:-}" == LAND &&
             "${SITL_LAND_OBSERVATION_SEC:-0}" =~ ^[0-9]+([.][0-9]+)?$ &&
             "${SITL_LAND_OBSERVATION_SEC:-0}" != 0 ]]; then
-        printf '[autonomy-cpp] LAND scenario observation hold=%ss\n' \
+        printf '[정보] LAND 시나리오 관찰 유지시간=%s초\n' \
           "$SITL_LAND_OBSERVATION_SEC"
         sleep "$SITL_LAND_OBSERVATION_SEC"
       fi

@@ -6,12 +6,59 @@
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
+#include <sys/file.h>
 #include <stdexcept>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <termios.h>
 #include <tuple>
 #include <unistd.h>
+
+namespace {
+
+void throw_errno(const std::string& what) {
+    throw std::runtime_error(what + ": " + std::strerror(errno));
+}
+
+std::string validate_serial_path(const std::string& path) {
+    static const std::string prefix = "/dev/serial/by-id/";
+    if (path.rfind(prefix, 0) != 0 || path.size() <= prefix.size()) {
+        throw std::runtime_error(
+            "serial endpoint must use /dev/serial/by-id/...; direct /dev/tty paths are forbidden");
+    }
+    return path;
+}
+
+}  // namespace
+
+SerialPortLock::SerialPortLock(const std::string& serial_path)
+    : lock_path_(lock_path_for(serial_path)) {
+    fd_ = ::open(lock_path_.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+    if (fd_ < 0) throw_errno("open serial lock " + lock_path_);
+    if (flock(fd_, LOCK_EX | LOCK_NB) != 0) {
+        const std::string reason = std::strerror(errno);
+        ::close(fd_);
+        fd_ = -1;
+        throw std::runtime_error("serial endpoint is already owned: " + serial_path +
+                                 " (" + reason + ")");
+    }
+}
+
+SerialPortLock::~SerialPortLock() {
+    if (fd_ >= 0) {
+        flock(fd_, LOCK_UN);
+        ::close(fd_);
+    }
+}
+
+std::string SerialPortLock::lock_path_for(const std::string& serial_path) {
+    uint64_t hash = 1469598103934665603ULL;
+    for (const unsigned char byte : serial_path) {
+        hash ^= byte;
+        hash *= 1099511628211ULL;
+    }
+    return "/tmp/astrodrone-serial-" + std::to_string(hash) + ".lock";
+}
 
 namespace {
 
@@ -60,10 +107,6 @@ speed_t baud_to_speed(int baud) {
     }
 }
 
-void throw_errno(const std::string& what) {
-    throw std::runtime_error(what + ": " + std::strerror(errno));
-}
-
 int wait_readable(int fd, int timeout_ms) {
     struct pollfd pfd { fd, POLLIN, 0 };
     return poll(&pfd, 1, timeout_ms);
@@ -71,7 +114,8 @@ int wait_readable(int fd, int timeout_ms) {
 
 class SerialTransport : public Transport {
 public:
-    SerialTransport(const std::string& path, int baud) {
+    SerialTransport(const std::string& path, int baud)
+        : lock_(validate_serial_path(path)) {
         fd_ = ::open(path.c_str(), O_RDWR | O_NOCTTY);
         if (fd_ < 0) throw_errno("open serial port " + path);
 
@@ -119,6 +163,7 @@ public:
     }
 
 private:
+    SerialPortLock lock_;
     int fd_ = -1;
 };
 

@@ -20,6 +20,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdio>
 #include <ctime>
 #include <deque>
 #include <fstream>
@@ -41,7 +42,7 @@
 #include "gcs_video_publisher.hpp"
 #include "report.hpp"
 #include "sysinfo.hpp"
-#include "trt_engine.hpp"
+#include "tensorrt_engine.hpp"
 #include "yaml_settings.hpp"
 
 #ifdef ASTRODRONE_HAVE_GZ_FRAME_SOURCE
@@ -65,11 +66,9 @@ constexpr int PORT = 8002;  // same default as yolo_live.py, so
 
 constexpr double DEFAULT_CONF = 0.25;
 constexpr float IOU_THRES = 0.45f;  // yolov5 AutoShape's default iou, not exposed in the UI either
-// See trt_engine.hpp's YoloTrt ctor doc: FP16 measured mAP50 0.995 -> 0.659
+// See tensorrt_engine.hpp's YoloTrt ctor doc: FP16 measured mAP50 0.995 -> 0.659
 // on a GTX 1660 SUPER in this project; unverified on Jetson - leave false.
 constexpr bool FP16 = false;
-
-constexpr int TARGET_CONFIRM_FRAMES = 5;
 
 constexpr int WIDTH = 640, HEIGHT = 480;
 // ---------------------------------------------------------------------------
@@ -195,6 +194,8 @@ struct DetSummary {
 
 struct TargetInfo {
     bool found = false;
+    // Kept only as a backward-compatible JSON field. Handoff stability is
+    // owned by FlightMissionApp, not by a fixed inference-frame count.
     bool confirmed = false;
     double t = 0.0;
     std::string name;
@@ -394,6 +395,11 @@ void draw_detections(cv::Mat& img, const std::vector<Detection>& dets, const std
 // threads - grabber() / inferer() / sampler(), mirrors yolo_live.py
 // ---------------------------------------------------------------------------
 
+std::int64_t monotonic_nanoseconds();
+void write_frame_readiness_marker(const FrameMetadata& metadata,
+                                  std::uint64_t frame_sequence,
+                                  std::uint32_t width, std::uint32_t height);
+
 void grabber(SharedState& state, cv::Vec3f wb_gains_bgr, FrameSource& source) {
     while (!g_stopping.load()) {
         cv::Mat frame;
@@ -402,14 +408,20 @@ void grabber(SharedState& state, cv::Vec3f wb_gains_bgr, FrameSource& source) {
         if (source.read(frame, metadata, error)) {
             apply_wb_correction(frame, wb_gains_bgr);
             double now = monotonic_seconds();
+            std::uint64_t frame_sequence = 0;
             {
                 std::lock_guard<std::mutex> lock(state.cap_mutex);
                 state.raw_frame = frame;
                 state.raw_metadata = metadata;
                 state.raw_frame_gen++;
+                frame_sequence = state.raw_frame_gen;
                 push_capped(state.cap_times, now, static_cast<size_t>(30));
                 state.cap_count++;
             }
+            write_frame_readiness_marker(
+                metadata, frame_sequence,
+                metadata.width != 0 ? metadata.width : static_cast<std::uint32_t>(frame.cols),
+                metadata.height != 0 ? metadata.height : static_cast<std::uint32_t>(frame.rows));
             state.cap_cv.notify_all();
             continue;
         }
@@ -422,12 +434,57 @@ void grabber(SharedState& state, cv::Vec3f wb_gains_bgr, FrameSource& source) {
     }
 }
 
+std::int64_t monotonic_nanoseconds() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+void write_frame_readiness_marker(const FrameMetadata& metadata,
+                                  std::uint64_t frame_sequence,
+                                  std::uint32_t width, std::uint32_t height) {
+    const char* marker_path = std::getenv("CAMERA_FRAME_READY_FILE");
+    if (marker_path == nullptr || *marker_path == '\0') return;
+
+    const std::string temporary_path = std::string(marker_path) + ".tmp." +
+                                       std::to_string(static_cast<long long>(::getpid()));
+    std::ofstream marker(temporary_path, std::ios::trunc);
+    if (!marker) return;
+    marker << "frame_sequence=" << frame_sequence << '\n'
+           << "frame_timestamp_ns=" << metadata.source_timestamp_ns << '\n'
+           << "monotonic_timestamp_ns=" << monotonic_nanoseconds() << '\n'
+           << "width=" << width << '\n'
+           << "height=" << height << '\n'
+           << "source=" << metadata.source << '\n';
+    marker.close();
+    if (::rename(temporary_path.c_str(), marker_path) != 0) {
+        ::unlink(temporary_path.c_str());
+    }
+}
+
+void write_camera_source_readiness_marker(const std::string& source,
+                                           const std::string& topic) {
+    const char* marker_path = std::getenv("CAMERA_SOURCE_READY_FILE");
+    if (marker_path == nullptr || *marker_path == '\0') return;
+
+    const std::string temporary_path = std::string(marker_path) + ".tmp." +
+                                       std::to_string(static_cast<long long>(::getpid()));
+    std::ofstream marker(temporary_path, std::ios::trunc);
+    if (!marker) return;
+    marker << "source=" << source << '\n'
+           << "topic=" << topic << '\n'
+           << "ready=1\n";
+    marker.close();
+    if (::rename(temporary_path.c_str(), marker_path) != 0) {
+        ::unlink(temporary_path.c_str());
+    }
+}
+
 void inferer(SharedState& state, YoloTrt& model, ConfState& conf_state,
              const std::vector<std::string>& class_names,
              GazeboAnnotatedPublisher* gazebo_publisher,
              GcsVideoPublisher* video_publisher) {
     uint64_t last_gen = 0;
-    std::deque<std::optional<std::string>> streak;  // None-slot for "no/unstable detection this frame"
 
     while (!g_stopping.load()) {
         cv::Mat frame;
@@ -471,7 +528,6 @@ void inferer(SharedState& state, YoloTrt& model, ConfState& conf_state,
         }
 
         bool multi = dets.size() > 1;
-        std::optional<std::string> top_name;
         TargetInfo target;
         target.detections = static_cast<int>(dets.size());
         target.multi = multi;
@@ -488,7 +544,6 @@ void inferer(SharedState& state, YoloTrt& model, ConfState& conf_state,
             std::string name =
                 (top->cls >= 0 && top->cls < static_cast<int>(class_names.size())) ? class_names[top->cls]
                                                                                     : "class_" + std::to_string(top->cls);
-            top_name = name;
             target.found = true;
             target.name = name;
             target.conf = round_to(top->conf, 3);
@@ -511,12 +566,11 @@ void inferer(SharedState& state, YoloTrt& model, ConfState& conf_state,
             state.last_dets = det_summaries;
             state.last_latency_ms = round_to(latency_ms, 1);
 
-            push_capped(streak, multi ? std::optional<std::string>() : top_name,
-                        static_cast<size_t>(TARGET_CONFIRM_FRAMES));
-            bool confirmed = !multi && top_name.has_value() && streak.size() == TARGET_CONFIRM_FRAMES &&
-                              std::all_of(streak.begin(), streak.end(),
-                                          [&](const std::optional<std::string>& n) { return n == top_name; });
-            target.confirmed = confirmed;
+            // The legacy field remains additive for older consumers, but it no
+            // longer controls mission handoff. A found detection is exposed
+            // immediately; FlightMissionApp applies the 2-second same-class
+            // dwell gate.
+            target.confirmed = target.found;
             target.t = now;
             state.target = target;
         }
@@ -846,11 +900,16 @@ int run(int argc, char** argv) {
     std::string setting_path = repo_root + "/setting/cam_sets.yaml";
     std::string yolo_dir = repo_root + "/YOLO_MODEL";
     std::string onnx_path = yolo_dir + "/prototype.onnx";
-    std::string engine_path = yolo_dir + "/prototype.engine";
+    std::string engine_path;
     std::string classes_path = yolo_dir + "/classes.txt";
 
     if (const char* env = std::getenv("YOLO_ONNX"); env && *env) onnx_path = env;
     if (const char* env = std::getenv("YOLO_ENGINE"); env && *env) engine_path = env;
+    if (engine_path.empty()) {
+        if (const char* env = std::getenv("YOLO_ENGINE_PATH"); env && *env) {
+            engine_path = env;
+        }
+    }
 
     std::string frame_source_name = "imx219";
     std::string gazebo_topic;
@@ -862,6 +921,12 @@ int run(int argc, char** argv) {
         else if (arg == "--onnx" && i + 1 < argc) onnx_path = argv[++i];
         else throw std::runtime_error("usage: yolo_live [--frame-source imx219|jetson|gazebo] [--gazebo-topic /exact/topic] [--engine path] [--onnx path]");
     }
+    if (engine_path.empty()) {
+        throw std::runtime_error("TensorRT 엔진이 지정되지 않았습니다. --engine 또는 YOLO_ENGINE_PATH를 사용하세요.");
+    }
+    if (::access(engine_path.c_str(), R_OK) != 0) {
+        throw std::runtime_error("TensorRT 엔진 파일을 읽을 수 없습니다: " + engine_path);
+    }
     std::unique_ptr<FrameSource> frame_source;
     if (frame_source_name == "imx219" || frame_source_name == "jetson") {
         if (!gazebo_topic.empty()) throw std::runtime_error("--gazebo-topic is only valid with --frame-source gazebo");
@@ -872,6 +937,10 @@ int run(int argc, char** argv) {
     } else {
         throw std::runtime_error("unknown --frame-source: " + frame_source_name);
     }
+    // For Gazebo this follows a successful topic subscription. For Jetson it
+    // records source construction; actual camera availability still requires
+    // a frame marker from grabber().
+    write_camera_source_readiness_marker(frame_source_name, gazebo_topic);
     std::cout << "frame_source=" << frame_source_name;
     if (!gazebo_topic.empty()) std::cout << " topic=" << gazebo_topic;
     std::cout << " engine=" << engine_path << std::endl;

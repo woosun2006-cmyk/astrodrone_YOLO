@@ -6,9 +6,8 @@
 #include <thread>
 #include <unistd.h>
 
-#include "autopilot/command_sender.hpp"
-#include "autopilot/real_flight_guard.hpp"
-#include "autopilot/runtime_transport.hpp"
+#include "autopilot/autopilot_mavlink_adapter.hpp"
+#include "app/runtime_config.hpp"
 #include "drone_lib.hpp"
 
 namespace {
@@ -39,9 +38,15 @@ std::string statustext_to_string(const mavlink_statustext_t& st) {
     return std::string(st.text, strnlen(st.text, sizeof(st.text)));
 }
 
-std::unique_ptr<MavConnection> connect(const std::string& address, double timeout) {
-    auto master = open_connection(address);
-    std::cout << "MAVLink heartbeat 대기 중: " << address << " (" << timeout << "초 제한)"
+std::unique_ptr<autopilot::AutopilotMavlinkAdapter> connect(
+    const app::RuntimeConfig& config, double timeout,
+    safety::SafetyMonitor& safety_monitor) {
+    auto master = std::make_unique<autopilot::AutopilotMavlinkAdapter>(
+        open_transport(config.endpoint, config.baud), config,
+        [&](const safety::CommandRequest& request) {
+            return safety_monitor.authorize(request);
+        });
+    std::cout << "MAVLink heartbeat 대기 중: " << config.endpoint << " (" << timeout << "초 제한)"
               << std::endl;
 
     mavlink_heartbeat_t heartbeat{};
@@ -57,7 +62,7 @@ std::unique_ptr<MavConnection> connect(const std::string& address, double timeou
     return master;
 }
 
-bool set_mode(autopilot::CommandSender& commands, MavConnection& master,
+bool set_mode(autopilot::AutopilotMavlinkAdapter& master,
               const std::string& mode, double timeout) {
     const auto& mapping = copter_mode_mapping();
     auto it = mapping.find(mode);
@@ -67,7 +72,7 @@ bool set_mode(autopilot::CommandSender& commands, MavConnection& master,
     }
 
     std::cout << mode << " 모드 변경 명령 전송" << std::endl;
-    if (!commands.set_mode(mode)) return false;
+    if (!master.set_mode(mode)) return false;
 
     auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double>(timeout);
     while (std::chrono::steady_clock::now() < deadline) {
@@ -98,9 +103,9 @@ bool set_mode(autopilot::CommandSender& commands, MavConnection& master,
     return false;
 }
 
-void send_arm(autopilot::CommandSender& commands, bool should_arm) {
+void send_arm(autopilot::AutopilotMavlinkAdapter& master, bool should_arm) {
     std::cout << (should_arm ? "ARM" : "DISARM") << " 명령 전송" << std::endl;
-    commands.arm_disarm(should_arm);
+    master.arm_disarm(should_arm);
 }
 
 struct ArmResult {
@@ -110,7 +115,8 @@ struct ArmResult {
     bool last_armed;
 };
 
-ArmResult wait_arm_result(MavConnection& master, bool expected_armed, double timeout) {
+ArmResult wait_arm_result(autopilot::AutopilotMavlinkAdapter& master,
+                          bool expected_armed, double timeout) {
     auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double>(timeout);
     bool ack_seen = false;
     bool last_armed_known = false;
@@ -170,11 +176,12 @@ int run(int argc, char** argv) {
     double hold = 3;
     bool keep_armed = false;
     std::string target;
-    std::string router_serial;
+    std::string serial_endpoint;
+    std::string serial_owner;
     bool allow_arm_flag = false;
     bool confirm_real_flight = false;
     bool commands_enabled_flag = false;
-    bool router_ownership_confirmed = false;
+    bool serial_owner_confirmed = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -186,16 +193,18 @@ int run(int argc, char** argv) {
             address = next("--address");
         } else if (arg == "--target") {
             target = next("--target");
-        } else if (arg == "--router-serial") {
-            router_serial = next("--router-serial");
+        } else if (arg == "--connect") {
+            serial_endpoint = next("--connect");
+        } else if (arg == "--serial-owner") {
+            serial_owner = next("--serial-owner");
         } else if (arg == "--allow-arm") {
             allow_arm_flag = true;
         } else if (arg == "--confirm-real-flight") {
             confirm_real_flight = true;
         } else if (arg == "--commands-enabled") {
             commands_enabled_flag = true;
-        } else if (arg == "--router-owned") {
-            router_ownership_confirmed = true;
+        } else if (arg == "--serial-owner-confirmed") {
+            serial_owner_confirmed = true;
         } else if (arg == "--heartbeat-timeout") {
             heartbeat_timeout = std::stod(next("--heartbeat-timeout"));
         } else if (arg == "--mode") {
@@ -212,51 +221,63 @@ int run(int argc, char** argv) {
     }
 
     if (!target.empty()) setenv("ASTRODRONE_TARGET", target.c_str(), 1);
-    const auto runtime_target = autopilot::runtime_target_from_environment();
-    const auto transport = autopilot::load_runtime_transport(
-        runtime_target, autopilot::TransportRole::CommandOwner);
-    if (runtime_target == autopilot::RuntimeTarget::Real) {
+    const auto runtime_target = app::runtime_target_from_environment();
+    if (runtime_target == app::RuntimeTarget::Real) {
+        if (serial_owner != "onboard" || serial_endpoint.empty()) {
+            throw std::runtime_error(
+                "test_arm real guard: --connect /dev/serial/by-id/... and --serial-owner onboard are required");
+        }
+        setenv("ASTRODRONE_SERIAL_ENDPOINT", serial_endpoint.c_str(), 1);
         if (allow_arm_flag && confirm_real_flight && commands_enabled_flag &&
-            router_ownership_confirmed) {
+            serial_owner_confirmed) {
             setenv("ASTRODRONE_COMMAND_MODE", "flight", 1);
             setenv("ASTRODRONE_ALLOW_MAVLINK_WRITES", "1", 1);
             setenv("ASTRODRONE_ALLOW_VEHICLE_COMMANDS", "1", 1);
             setenv("ASTRODRONE_ALLOW_ARM", "1", 1);
             setenv("ASTRODRONE_COMMANDS_ENABLED", "1", 1);
-            setenv("ASTRODRONE_ROUTER_OWNERSHIP_CONFIRMED", "1", 1);
+            setenv("ASTRODRONE_SERIAL_OWNER_CONFIRMED", "1", 1);
             setenv("ASTRODRONE_ALLOW_TELEMETRY_CONFIGURATION", "1", 1);
         }
-        const auto flight_config = autopilot::load_runtime_transport(
-            runtime_target, autopilot::TransportRole::CommandOwner);
-        autopilot::RealFlightOptions options;
-        options.router_serial = router_serial;
-        options.command_endpoint = flight_config.endpoint;
-        options.telemetry_endpoint = autopilot::load_runtime_transport(
-            runtime_target, autopilot::TransportRole::TelemetrySubscriber).endpoint;
+        const auto flight_config = app::load_runtime_config(
+            runtime_target, app::TransportRole::CommandOwner);
+        app::RealFlightOptions options;
+        options.serial_endpoint = serial_endpoint;
+        options.telemetry_endpoint = app::load_runtime_config(
+            runtime_target, app::TransportRole::TelemetrySubscriber).endpoint;
         options.allow_arm = allow_arm_flag;
         options.confirm_real_flight = confirm_real_flight;
         options.commands_enabled = commands_enabled_flag;
-        options.router_ownership_confirmed = router_ownership_confirmed;
-        if (router_serial.empty() || access(router_serial.c_str(), F_OK) != 0) {
+        options.serial_owner_confirmed = serial_owner_confirmed;
+        if (access(serial_endpoint.c_str(), F_OK) != 0) {
             throw std::runtime_error(
-                "test_arm real guard: router serial path must exist and be supplied explicitly");
+                "test_arm real guard: serial path must exist and be supplied explicitly");
         }
-        const auto decision = autopilot::validate_real_flight(flight_config, options);
+        const auto decision = app::validate_real_flight(flight_config, options);
         if (!decision.allowed) throw std::runtime_error("test_arm real guard: " + decision.reason);
         address = flight_config.endpoint;
     } else {
-        (void)transport;
+        // SITL uses the configured UDP endpoint unless --address overrides it.
     }
 
-    auto master = connect(address, heartbeat_timeout);
-    autopilot::CommandGate command_gate;
-    autopilot::CommandSender commands(*master, command_gate);
+    auto config = app::load_runtime_config(
+        runtime_target, app::TransportRole::CommandOwner);
+    if (runtime_target == app::RuntimeTarget::Sitl && !address.empty()) {
+        config.endpoint = address;
+    }
+    safety::SafetyMonitor safety_monitor;
+    safety::CommandAuthority command_authority;
+    command_authority.vehicle_commands_enabled = config.allow_vehicle_commands;
+    command_authority.real_flight_approved =
+        runtime_target != app::RuntimeTarget::Real ||
+        config.command_mode == app::CommandMode::Flight;
+    safety_monitor.set_authority(command_authority);
+    auto master = connect(config, heartbeat_timeout, safety_monitor);
 
     if (!no_mode) {
-        set_mode(commands, *master, mode, 8);
+        set_mode(*master, mode, 8);
     }
 
-    send_arm(commands, true);
+    send_arm(*master, true);
     ArmResult armed_result = wait_arm_result(*master, true, arm_timeout);
 
     if (armed_result.ok) {
@@ -279,7 +300,7 @@ int run(int argc, char** argv) {
         std::this_thread::sleep_for(std::chrono::duration<double>(hold));
     }
 
-    send_arm(commands, false);
+    send_arm(*master, false);
     ArmResult disarmed_result = wait_arm_result(*master, false, arm_timeout);
 
     if (disarmed_result.ok) {

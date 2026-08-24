@@ -23,7 +23,15 @@ fi
 # be built from WSL or a Jetson clone, so the cache must belong to this source.
 BUILD_DIR=${YOLO_LIVE_BUILD_DIR:-"$LAUNCHER_DIR/build-repo"}
 ONNX_PATH=${YOLO_ONNX_PATH:-"$LAUNCHER_DIR/../best_v5.onnx"}
-ENGINE_PATH=${YOLO_ENGINE_PATH:-"$LAUNCHER_DIR/../best_v5_local.engine"}
+ENGINE_PATH=""
+if [ -n "${YOLO_ENGINE_PATH:-}" ]; then
+    ENGINE_PATH="$YOLO_ENGINE_PATH"
+elif [ -n "${YOLO_ENGINE:-}" ]; then
+    ENGINE_PATH="$YOLO_ENGINE"
+else
+    printf '%s\n' '[run_yolo_live] TensorRT engine is not selected; set YOLO_ENGINE_PATH or YOLO_ENGINE.' >&2
+    exit 2
+fi
 
 # Gazebo's camera plugin exposes image data only after its streaming switch is
 # enabled. Keep this here so direct C++ runs and the higher-level autonomy

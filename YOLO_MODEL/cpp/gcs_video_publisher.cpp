@@ -1,5 +1,8 @@
 #include "gcs_video_publisher.hpp"
 
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
+
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>

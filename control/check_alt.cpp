@@ -16,7 +16,7 @@
 #include <string>
 
 #include "drone_lib.hpp"
-#include "autopilot/runtime_transport.hpp"
+#include "app/runtime_config.hpp"
 
 namespace {
 
@@ -110,14 +110,14 @@ int run(int argc, char** argv) {
     const bool runtime_selected = std::getenv("ASTRODRONE_TARGET") != nullptr ||
                                   std::getenv("DRONE_TARGET") != nullptr;
     if (runtime_selected) {
-        const auto target = autopilot::runtime_target_from_environment();
-        const auto runtime = autopilot::load_runtime_transport(
-            target, autopilot::TransportRole::TelemetrySubscriber);
+        const auto target = app::runtime_target_from_environment();
+        const auto runtime = app::load_runtime_config(
+            target, app::TransportRole::TelemetrySubscriber);
         args.address = runtime.endpoint;
         args.baud = runtime.baud;
         allow_telemetry_configuration = runtime.allow_telemetry_configuration;
     }
-    if (!runtime_selected || autopilot::endpoint_is_serial(args.address)) {
+    if (!runtime_selected || app::endpoint_is_serial(args.address)) {
         throw std::runtime_error(
             "diagnostic requires ASTRODRONE_TARGET=sitl|real and a runtime loopback UDP endpoint; direct serial is disabled");
     }

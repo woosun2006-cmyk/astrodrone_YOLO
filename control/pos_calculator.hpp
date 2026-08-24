@@ -33,11 +33,6 @@ struct DownwardPixelAngles {
 DownwardPixelAngles downward_pixel_to_angles(
     double x_px, double y_px, const PixelCalibration& calibration);
 
-struct DownwardTargetPixels {
-    double x_px = 0.0;  // +right
-    double y_px = 0.0;  // +image-up; body-forward is the opposite sign
-};
-
 struct DownwardBodyOffset {
     double forward_m = 0.0;  // +body-forward; image-up is +body-forward here
     double right_m = 0.0;    // +body-right; image-right is +body-right here
@@ -63,26 +58,3 @@ struct BodyVelocityCorrection {
 BodyVelocityCorrection body_velocity_from_downward_pixel_error(
     double x_px, double y_px, double altitude_m, double focal_length_px,
     double gain, double max_speed);
-
-// Projects a fixed target in the ArduPilot LOCAL_NED frame into the same
-// ideal downward-camera pixel coordinates produced by YOLO. Image-up is
-// body-forward for this fixed camera. This lets the
-// normal range and control pipeline be exercised without detector dropouts.
-DownwardTargetPixels fixed_ned_target_to_pixels(
-    double target_north_m,
-    double target_east_m,
-    double vehicle_north_m,
-    double vehicle_east_m,
-    double vehicle_yaw_rad,
-    double altitude_m,
-    double focal_length_px);
-
-DownwardTargetPixels fixed_ned_target_to_pixels(
-    double target_north_m,
-    double target_east_m,
-    double vehicle_north_m,
-    double vehicle_east_m,
-    double vehicle_yaw_rad,
-    double altitude_m,
-    double focal_x_px,
-    double focal_y_px);

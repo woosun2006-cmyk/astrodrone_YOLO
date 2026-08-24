@@ -79,7 +79,7 @@ add_executable(yolo_live
     yolo_live.cpp
     gcs_video_publisher.cpp
     frame_source.cpp
-    trt_engine.cpp
+    tensorrt_engine.cpp
     http_server.cpp
     sysinfo.cpp
     report.cpp

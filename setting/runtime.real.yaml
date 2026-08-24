@@ -2,14 +2,14 @@ target: real
 command:
   mode: observe
 transport:
-  # The external MAVLink router is the sole serial owner. It must open the
-  # by-id Pixhawk device and fan out these loopback UDP endpoints.
   serial_endpoint: /dev/serial/by-id/REPLACE_WITH_PIXHAWK
-  command_endpoint: udp:127.0.0.1:14550
+  # FlightMissionApp's AutopilotMavlinkAdapter owns this serial endpoint.
+  command_endpoint: /dev/serial/by-id/REPLACE_WITH_PIXHAWK
   telemetry_endpoint: udp:127.0.0.1:14551
   gcs_telemetry_endpoint: udp:127.0.0.1:14553
+  health_telemetry_endpoint: udp:127.0.0.1:14554
   baud: 115200
-  serial_owner: external-router
+  serial_owner: onboard
 camera:
   source: jetson
 flight:

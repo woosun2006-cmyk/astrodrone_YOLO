@@ -1,27 +1,30 @@
 real:
   serial:
-    address: /dev/ttyACM0
+    address: /dev/serial/by-id/REPLACE_WITH_PIXHAWK
     baud: 115200
   proxy_udp:
-    address: udp:127.0.0.1:14550
+    # Legacy read-only diagnostic fallback. Canonical runtime paths use
+    # setting/runtime.real.yaml and the Adapter telemetry fan-out.
+    address: udp:127.0.0.1:14551
 
 sitl:
   local_tcp:
-    address: tcp:127.0.0.1:5762
+    # Canonical SITL command/telemetry owner is FlightMissionApp over TCP.
+    address: tcp:127.0.0.1:5760
   remote_udp:
-    address: udp:0.0.0.0:14561
-    note: Mission Planner SITL 에서 젯슨(192.168.0.196:14561)으로 MAVLink UDP 출력 추가
+    address: udp:127.0.0.1:14553
+    note: read-only GCS/Mission Planner telemetry fan-out
 
 heartbeat_timeout: 20
 
-# Target-approach guidance: target_distance.cpp computes a range to the
-# YOLO-detected target and publishes it over loopback UDP; control.cpp
-# consumes it and flies toward the target. See target_distance.cpp and
-# control.cpp for how each value is used.
+# Target-approach guidance: target_distance.cpp publishes the YOLO pixel
+# observation over loopback UDP; FlightMissionApp combines it with Adapter
+# altitude telemetry and control consumes the resulting range/guidance input.
 target_track:
   yolo_host: 127.0.0.1
   yolo_port: 8002          # must match setting/cam_sets.yaml's yolo_live port
   udp_port: 15020          # loopback link: target_distance.cpp -> control.cpp
+  gcs_udp_port: 15022      # independent copy for gcs/sender/telem_sender
   # Pinhole-camera model (control/pos_calculator.cpp): ground_offset_m =
   # pixel_offset / pixel_focal_length_px * altitude_m. Replaces the old flat
   # pixel_to_meter multiplier, which gave the same real-world distance for a
@@ -31,23 +34,81 @@ target_track:
   # against a real target at a known distance/altitude before trusting the
   # computed range for actual flight.
   pixel_focal_length_px: 530
+  # Calibrated pinhole-camera parameters. x/y are target offsets from this
+  # principal point; the signed mapping remains image-up -> body-forward and
+  # image-right -> body-right.
+  pixel_focal_length_x_px: 530
+  pixel_focal_length_y_px: 530
+  pixel_principal_point_x_px: 320
+  pixel_principal_point_y_px: 240
   target_stale_ms: 400     # ignore a YOLO detection older than this
-  altitude_stale_ms: 500   # target_distance.cpp stops asserting altitude_valid past this
-  # Outlier guard on the computed distance_m (target_distance.cpp) - both
+  altitude_stale_ms: 1000  # allow SITL's observed 0.5~0.6s telemetry gaps; heartbeat has its own check
+  # Outlier guard on the computed distance_m (FlightMissionApp) - both
   # placeholders, tune against this vehicle's real operating range.
   max_plausible_distance_m: 50.0  # reject any single reading beyond this
   max_distance_jump_m: 5.0        # reject a reading that jumps this far from the last accepted one
   link_stale_ms: 500       # control.cpp hovers if no UDP packet this recent
-  max_forward_speed: 0.5   # m/s cap, control.cpp's approach velocity
-  # Yaw-first guidance: control.cpp turns the vehicle to face the target
-  # (yaw_rate, capped at max_yaw_rate) instead of crab-walking sideways,
-  # and only opens up forward speed once roughly aligned - see
-  # control.cpp's approach_target() for the alignment taper.
-  max_yaw_rate: 0.6         # rad/s cap on the yaw-alignment turn rate
-  yaw_align_px: 80.0        # forward speed ramps in as |x_px offset| falls within this
-  stop_distance: 2.0       # m; forward speed -> 0 once inside this range
-  target_lost_land_sec: 10.0  # control.cpp lands if the target stays lost this long
+  max_forward_speed: 0.5   # m/s; maximum body-frame correction speed
+  approach_outer_distance: 15.0  # legacy compatibility; descent no longer starts from range alone
+  approach_stop_distance: 1.0    # legacy distance input; altitude controls descent stop
+  approach_descent_speed: 0.2     # legacy fallback for older callers
+  center_tolerance_px: 25.0       # target must remain within this x/y image error
+  center_dwell_tolerance_px: 15.0 # tighter x/y error required before descent dwell
+  center_hold_sec: 1.0            # centered continuously for this long before descent
+  search_altitude_m: 5.0
+  search_altitude_tolerance_m: 0.3
+  hold_altitude_m: 1.0             # actual Pixhawk altitude stop for both algorithms
+  vertical_descent_speed_mps: 0.2  # m/s; only after the algorithm's descent gate
+  vertical_descent_speed: 0.2      # legacy fallback for older callers
+  # The downward camera is fixed to the body. Yawing does not move the target
+  # toward the image center, so control.cpp uses body forward/right velocity
+  # to align x_px/y_px before it permits any descent.
+  max_yaw_rate: 0.6         # retained for packet/config compatibility
+  yaw_align_px: 80.0        # retained for packet/config compatibility
+  stop_distance: 1.0       # legacy centered-distance input; not the altitude stop condition
+  # Hybrid pixel guidance. These defaults preserve the existing 0.5m/s cap;
+  # control-validation may override them through GUIDANCE_* environment vars.
+  guidance_algorithm: centered_vertical_descent
+  diagonal_path_angle_deg: 45.0
+  # compatibility key; guidance_algorithm is canonical
+  guidance_mode: centered_descent
+  # opt-in alternative: diagonal_approach
+  guidance_gain: 0.8
+  guidance_filter_alpha: 0.25
+  guidance_max_acceleration_mps2: 1.0
+  guidance_max_jerk_mps3: 5.0
+  guidance_velocity_deadband_rad: 0.01
+  guidance_velocity_hysteresis_rad: 0.005
+  guidance_theta_safe_threshold_rad: 0.0872664626
+  guidance_max_vector_speed_mps: 0.5
+  guidance_max_descent_speed_mps: 0.2
+  # <= 0 derives atan2(max_descent_speed, max_vector_speed), which is the
+  # steepest path angle possible without exceeding either configured limit.
+  guidance_desired_path_angle_rad: 0.0
+  guidance_horizontal_speed_deadband_mps: 0.01
+  diagonal_approach_distance_gain: 0.15
+  diagonal_approach_safe_fov_angle_rad: 0.6
+  diagonal_approach_stop_distance_m: 1.0  # distance term; altitude controls descent stop
+  # After this continuous loss interval, the default policy switches to
+  # LOITER and holds position. Set SITL_TARGET_LOSS_POLICY=AUTO only for an
+  # explicit experiment that should resume the mission.
+  target_lost_land_sec: 10.0
   approach_duration_sec: 60  # control.cpp lands automatically after this long
+  # AUTO mission handoff. The default control process waits for AUTO+ARMED,
+  # requires a continuous healthy target lock and completed takeoff altitude,
+  # then temporarily enters GUIDED. This prevents a ground-level detection
+  # from interrupting the AUTO TAKEOFF sequence.
+  handoff_min_altitude_m: 4.7
+  # A target must remain fresh, found, and the same class above 4.7m for this
+  # long before AUTO hands control to GUIDED. This is separate from center_hold_sec.
+  target_handoff_dwell_sec: 2.0
+  target_control_min_confidence: 0.60
+  target_reacquire_dwell_sec: 2.0
+  # Time spent in TARGET_SEARCH before any fresh target dwell completes.
+  # Target-loss timing starts only after the first fresh target is observed.
+  target_search_timeout_sec: 30.0
+  intercept_approach_duration_sec: 60.0
+  reacquire_cooldown_sec: 3.0
   # control.cpp's 1.range calc -> 2.velocity calc -> 3.send-to-Pixhawk cycle
   # period. Deliberately kept faster than target_distance.cpp's own sensing
   # rate (setting/rate.yaml's sense_cycle_ms): ArduPilot's GUIDED mode wants

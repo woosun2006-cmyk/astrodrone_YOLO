@@ -1,7 +1,7 @@
 #include "pos_calculator.hpp"
 
-#include <algorithm>
 #include <cmath>
+#include <algorithm>
 
 double pixel_offset_to_ground_m(double pixel_offset, double altitude_m, double focal_length_px) {
     return pixel_offset / focal_length_px * altitude_m;
@@ -21,41 +21,6 @@ DownwardPixelAngles downward_pixel_to_angles(
     return {
         std::atan2(calibration.cy_px - v_px, calibration.fy_px),
         std::atan2(u_px - calibration.cx_px, calibration.fx_px),
-    };
-}
-
-DownwardTargetPixels fixed_ned_target_to_pixels(
-    double target_north_m,
-    double target_east_m,
-    double vehicle_north_m,
-    double vehicle_east_m,
-    double vehicle_yaw_rad,
-    double altitude_m,
-    double focal_length_px) {
-    return fixed_ned_target_to_pixels(target_north_m, target_east_m, vehicle_north_m,
-                                      vehicle_east_m, vehicle_yaw_rad, altitude_m,
-                                      focal_length_px, focal_length_px);
-}
-
-DownwardTargetPixels fixed_ned_target_to_pixels(
-    double target_north_m,
-    double target_east_m,
-    double vehicle_north_m,
-    double vehicle_east_m,
-    double vehicle_yaw_rad,
-    double altitude_m,
-    double focal_x_px,
-    double focal_y_px) {
-    double north = target_north_m - vehicle_north_m;
-    double east = target_east_m - vehicle_east_m;
-    double forward = std::cos(vehicle_yaw_rad) * north +
-                     std::sin(vehicle_yaw_rad) * east;
-    double right = -std::sin(vehicle_yaw_rad) * north +
-                   std::cos(vehicle_yaw_rad) * east;
-    double projection_altitude = std::max(altitude_m, 0.05);
-    return {
-        right / projection_altitude * focal_x_px,
-        forward / projection_altitude * focal_y_px,
     };
 }
 

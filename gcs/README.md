@@ -1,8 +1,9 @@
 
 ## 현재 전송 경계
 
-`telem_sender`는 Pixhawk serial을 열지 않습니다. 외부 MAVLink router가
-serial을 단독 소유하고, publisher는 `udp:127.0.0.1:14553` 같은 별도 loopback
+`telem_sender`는 Pixhawk serial을 열지 않습니다. FlightMissionApp의
+`AutopilotMavlinkAdapter`가 serial을 단독 소유하고, publisher는
+`udp:127.0.0.1:14553` 같은 별도 loopback
 telemetry fan-out만 읽습니다. `14551`은 target-distance/control subscriber가
 사용하므로 같은 UDP socket을 여러 프로세스가 공유하지 않습니다. `SET_MESSAGE_INTERVAL`과 vehicle-affecting
 MAVLink 송신도 수행하지 않습니다.
@@ -31,21 +32,24 @@ overlay합니다.
 
 ## 데이터 경로
 
-SITL에서는 `simulation/scripts/start_router.sh`가 선택적으로
-`udp:127.0.0.1:14553`을 GCS 전용 telemetry fan-out으로 추가합니다.
+SITL canonical flight에서는 FlightMissionApp의 Adapter가
+`udp:127.0.0.1:14553`을 GCS 전용 telemetry fan-out으로 제공합니다.
+legacy router 진단 스크립트는 표준 launcher에서 호출하지 않습니다.
 `telem_sender`는 이 endpoint를 읽기만 하고, 결과 JSON을 `setting/gcs.yaml`의
-노트북 주소로 FEC 전송합니다. `control`의 14550, `target-distance`의 14551과
-GCS publisher의 입력을 같은 UDP 소켓에 겹쳐 바인드하지 않습니다.
+노트북 주소로 FEC 전송합니다. TargetRangeMsg는 FlightMissionApp용
+`127.0.0.1:15020`과 GCS용 `127.0.0.1:15022`로 각각 전송되며,
+`telem_sender`는 15022만 bind합니다. `target-distance`의 14551,
+GCS publisher의 14553, health_check의 14554는 서로 다른 입력입니다.
 
 publisher만 실행할 때:
 
 ```bash
-MAVPROXY_GCS_TELEMETRY_ENDPOINT=udp:127.0.0.1:14553 \
+ASTRODRONE_GCS_TELEMETRY_ENDPOINT=udp:127.0.0.1:14553 \
   ./gcs/run_publisher.sh
 ```
 
-실제 장비에서는 외부 MAVLink router가 serial을 소유하고 같은 loopback
-fan-out을 제공해야 합니다. `telem_sender`와 GCS bridge는 어떤 MAVLink 명령,
+실제 장비에서는 onboard adapter가 serial을 소유하고 같은 loopback
+fan-out을 제공합니다. `telem_sender`와 GCS bridge는 어떤 MAVLink 명령,
 `SET_MESSAGE_INTERVAL`, serial open도 수행하지 않습니다. 영상이 끊겨도
 telemetry publisher와 onboard control은 계속 실행되며, bridge는 영상 stale
 상태만 표시합니다.

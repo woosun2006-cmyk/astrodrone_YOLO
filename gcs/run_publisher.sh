@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 BUILD_DIR="${GCS_BUILD_DIR:-$SCRIPT_DIR/build}"
-ENDPOINT="${MAVPROXY_GCS_TELEMETRY_ENDPOINT:-udp:127.0.0.1:14553}"
+ENDPOINT="${ASTRODRONE_GCS_TELEMETRY_ENDPOINT:-udp:127.0.0.1:14553}"
 
 case "$ENDPOINT" in
   udp:127.0.0.1:[0-9]*) ;;

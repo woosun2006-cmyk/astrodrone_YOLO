@@ -7,19 +7,27 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd -P)"
 source "$SCRIPT_DIR/project-env.sh"
 
 profile="${DRONE_PROFILE:-observe}"
-case "$profile" in
-  sitl|real) ;;
-  flight)
-    printf '%s\n' '[control-cpp] flight profile is explicitly disabled.' >&2
-    exit 2
-    ;;
-  *)
-    printf '%s\n' "[control-cpp] profile '$profile' cannot run vehicle-affecting control; use DRONE_PROFILE=sitl for loopback SITL only." >&2
-    exit 2
-    ;;
-esac
+if [[ "${1:-}" == '--build-only' ]]; then
+  build_only=1
+else
+  build_only=0
+fi
+if (( build_only == 0 )); then
+  case "$profile" in
+    sitl|real) ;;
+    flight)
+      printf '%s\n' '[control-cpp] flight profile is explicitly disabled.' >&2
+      exit 2
+      ;;
+    *)
+      printf '%s\n' "[control-cpp] profile '$profile' cannot run vehicle-affecting control; use DRONE_PROFILE=sitl for loopback SITL only." >&2
+      exit 2
+      ;;
+  esac
+fi
 
-[[ -f "$CONTROL_DIR/control.cpp" ]] || { printf 'missing control source: %s\n' "$CONTROL_DIR/control.cpp" >&2; exit 1; }
+[[ -f "$CONTROL_DIR/app/main.cpp" ]] || { printf 'missing control source: %s\n' "$CONTROL_DIR/app/main.cpp" >&2; exit 1; }
+[[ -f "$CONTROL_DIR/app/flight_mission_app.cpp" ]] || { printf 'missing control source: %s\n' "$CONTROL_DIR/app/flight_mission_app.cpp" >&2; exit 1; }
 [[ -f "$SETTING_DIR/MAVLink.yaml" ]] || { printf 'missing settings: %s/MAVLink.yaml\n' "$SETTING_DIR" >&2; exit 1; }
 command -v g++ >/dev/null 2>&1 || { printf '%s\n' 'g++ is required; install with: sudo apt install build-essential' >&2; exit 1; }
 
@@ -34,28 +42,29 @@ fi
 
 if (( needs_build == 1 )); then
   g++ -std=c++17 -O2 -Wno-address-of-packed-member -I"$CONTROL_DIR" \
-    "$CONTROL_DIR/control.cpp" \
-    "$CONTROL_DIR/autopilot/runtime_transport.cpp" \
-    "$CONTROL_DIR/autopilot/real_flight_guard.cpp" \
+    "$CONTROL_DIR/app/main.cpp" \
+    "$CONTROL_DIR/app/flight_mission_app.cpp" \
+    "$CONTROL_DIR/app/preflight_readiness.cpp" \
+    "$CONTROL_DIR/autopilot/autopilot_mavlink_adapter.cpp" \
+    "$CONTROL_DIR/app/flight_phase.cpp" \
+    "$CONTROL_DIR/app/runtime_config.cpp" \
     "$CONTROL_DIR/drone_lib.cpp" \
     "$CONTROL_DIR/logging/command_audit_logger.cpp" \
     "$CONTROL_DIR/mav_transport.cpp" \
-    "$CONTROL_DIR/safety/control_authority.cpp" \
-    "$CONTROL_DIR/safety/flight_state.cpp" \
-    "$CONTROL_DIR/safety/health_monitor.cpp" \
-    "$CONTROL_DIR/safety/preflight_gate.cpp" \
+    "$CONTROL_DIR/safety/safety_monitor.cpp" \
     "$CONTROL_DIR/yaml_settings.cpp" \
     "$CONTROL_DIR/target_link.cpp" \
     "$CONTROL_DIR/pos_calculator.cpp" \
-    "$CONTROL_DIR/mission/pixel_guidance.cpp" \
-    "$CONTROL_DIR/mission/diagonal_approach_guidance.cpp" \
+    "$CONTROL_DIR/mission/centered_vertical_descent_algorithm.cpp" \
+    "$CONTROL_DIR/mission/diagonal_approach_algorithm.cpp" \
+    "$CONTROL_DIR/mission/mission_setup.cpp" \
     -pthread \
     -o "$control_binary"
 else
   printf '[control-cpp] using up-to-date binary: %s\n' "$control_binary"
 fi
 
-if [[ "${1:-}" == '--build-only' ]]; then
+if (( build_only == 1 )); then
   exit 0
 fi
 

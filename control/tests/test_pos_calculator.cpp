@@ -21,19 +21,6 @@ int main() {
     if (!check(near(downward_target_bearing_px(-100.0, 100.0, focal), -focal * M_PI / 4.0),
                "left bearing")) return 1;
 
-    auto north_target = fixed_ned_target_to_pixels(4.0, 0.0, 0.0, 0.0, 0.0, 2.0, 500.0);
-    if (!check(near(north_target.x_px, 0.0) && near(north_target.y_px, 1000.0),
-               "north projection")) return 1;
-
-    auto east_target = fixed_ned_target_to_pixels(0.0, 4.0, 0.0, 0.0, 0.0, 2.0, 500.0);
-    if (!check(near(east_target.x_px, 1000.0) && near(east_target.y_px, 0.0),
-               "east projection")) return 1;
-
-    auto east_facing =
-        fixed_ned_target_to_pixels(0.0, 4.0, 0.0, 0.0, M_PI / 2.0, 2.0, 500.0);
-    if (!check(near(east_facing.x_px, 0.0) && near(east_facing.y_px, 1000.0),
-               "yaw projection")) return 1;
-
     // Downward-camera guidance convention: YOLO emits +x to image-right and
     // +y to image-up. Runtime pose probing confirms image-up is
     // body-forward for this fixed downward camera.

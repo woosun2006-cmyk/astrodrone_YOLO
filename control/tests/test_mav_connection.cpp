@@ -1,13 +1,17 @@
 #include "fake_transport.hpp"
 
 #include "drone_lib.hpp"
+#include "../app/runtime_config.hpp"
 
 #include <chrono>
 #include <cmath>
+#include <fcntl.h>
 #include <functional>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
+#include <string>
+#include <unistd.h>
 #include <vector>
 
 namespace {
@@ -75,6 +79,33 @@ bool timeout_returns_without_device_or_sleep() {
     CHECK(!received);
     CHECK(fake->read_call_count() > 0);
     CHECK(elapsed < std::chrono::milliseconds(100));
+    return true;
+}
+
+bool serial_endpoint_policy_and_exclusive_lock() {
+    CHECK(!app::serial_endpoint_is_allowed("/dev/ttyACM0"));
+    CHECK(!app::serial_endpoint_is_allowed("/dev/ttyUSB0"));
+    CHECK(!app::serial_endpoint_is_allowed("/tmp/fake-pixhawk"));
+    CHECK(app::serial_endpoint_is_allowed("/dev/serial/by-id/fake-pixhawk"));
+
+    const int master = ::posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC);
+    CHECK(master >= 0);
+    CHECK(::grantpt(master) == 0);
+    CHECK(::unlockpt(master) == 0);
+    const char* slave_name = ::ptsname(master);
+    CHECK(slave_name != nullptr);
+
+    bool duplicate_rejected = false;
+    {
+        SerialPortLock first(slave_name);
+        try {
+            SerialPortLock second(slave_name);
+        } catch (const std::exception&) {
+            duplicate_rejected = true;
+        }
+    }
+    ::close(master);
+    CHECK(duplicate_rejected);
     return true;
 }
 
@@ -240,6 +271,35 @@ bool filter_preserves_earlier_and_later_mismatches() {
     return true;
 }
 
+bool observer_drains_fresh_frames_while_returning_pending_filter_match() {
+    mavlink_reset_channel_status(MAVLINK_COMM_0);
+    auto transport = std::make_unique<FakeTransport>();
+    FakeTransport* fake = transport.get();
+    unsigned heartbeat_observations = 0;
+
+    std::vector<uint8_t> first_batch = encode_message(sys_status(1, 1, 15000));
+    const std::vector<uint8_t> first_heartbeat = encode_message(heartbeat(1, 1, 3));
+    first_batch.insert(first_batch.end(), first_heartbeat.begin(), first_heartbeat.end());
+    fake->queue_incoming_bytes(first_batch);
+    MavConnection connection(std::move(transport));
+    connection.set_message_observer([&](const mavlink_message_t& message) {
+        if (message.msgid == MAVLINK_MSG_ID_HEARTBEAT) ++heartbeat_observations;
+    });
+
+    mavlink_message_t received{};
+    CHECK(connection.recv_match({MAVLINK_MSG_ID_HEARTBEAT}, received, 0.1));
+    CHECK(heartbeat_observations == 1);
+
+    // The first SYS_STATUS remains pending for the filtered caller. A new
+    // heartbeat must still be consumed by the observer before that old
+    // pending message is returned.
+    fake->queue_incoming_message(heartbeat(1, 1, 4));
+    CHECK(connection.recv_match({MAVLINK_MSG_ID_SYS_STATUS}, received, 0.1));
+    CHECK(received.msgid == MAVLINK_MSG_ID_SYS_STATUS);
+    CHECK(heartbeat_observations == 2);
+    return true;
+}
+
 bool reassembles_message_split_across_reads() {
     mavlink_reset_channel_status(MAVLINK_COMM_0);
     auto transport = std::make_unique<FakeTransport>();
@@ -346,6 +406,8 @@ int main() {
     const std::vector<std::pair<const char*, std::function<bool()>>> tests = {
         {"receives_heartbeat_and_records_target", receives_heartbeat_and_records_target},
         {"timeout_returns_without_device_or_sleep", timeout_returns_without_device_or_sleep},
+        {"serial_endpoint_policy_and_exclusive_lock",
+         serial_endpoint_policy_and_exclusive_lock},
         {"send_records_decodable_packet", send_records_decodable_packet},
         {"send_before_target_discovery_is_rejected", send_before_target_discovery_is_rejected},
         {"non_autopilot_heartbeat_does_not_set_target",
@@ -359,6 +421,8 @@ int main() {
          receives_coalesced_messages_without_byte_loss},
         {"filter_preserves_earlier_and_later_mismatches",
          filter_preserves_earlier_and_later_mismatches},
+        {"observer_drains_fresh_frames_while_returning_pending_filter_match",
+         observer_drains_fresh_frames_while_returning_pending_filter_match},
         {"reassembles_message_split_across_reads", reassembles_message_split_across_reads},
         {"empty_read_does_not_hide_following_message", empty_read_does_not_hide_following_message},
         {"command_target_is_stable_after_other_component_message",

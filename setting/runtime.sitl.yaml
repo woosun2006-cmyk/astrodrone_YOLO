@@ -2,8 +2,10 @@ target: sitl
 command:
   mode: flight
 transport:
-  command_endpoint: udp:127.0.0.1:14550
+  command_endpoint: tcp:127.0.0.1:5760
   telemetry_endpoint: udp:127.0.0.1:14551
+  gcs_telemetry_endpoint: udp:127.0.0.1:14553
+  health_telemetry_endpoint: udp:127.0.0.1:14554
   baud: 115200
   serial_owner: none
 camera:

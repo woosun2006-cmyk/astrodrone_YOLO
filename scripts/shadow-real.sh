@@ -7,20 +7,22 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd -P)"
 source "$SCRIPT_DIR/real-runtime-common.sh"
 
 duration=60
+serial_endpoint="${ASTRODRONE_SERIAL_ENDPOINT:-}"
 while (( $# )); do
   case "$1" in
     --duration) duration="$2"; shift 2 ;;
+    --connect) serial_endpoint="$2"; shift 2 ;;
     -h|--help)
-      printf '%s\n' '사용법: shadow-real.sh [--duration 초]'
+      printf '%s\n' '사용법: shadow-real.sh --connect /dev/serial/by-id/... [--duration 초]'
       exit 0
       ;;
     *) printf '[실패] 알 수 없는 옵션: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
 
-require_real_router_endpoints
-require_no_direct_serial_endpoint "$MAVPROXY_CONTROL_ENDPOINT"
-require_no_direct_serial_endpoint "$MAVPROXY_TELEMETRY_ENDPOINT"
+require_serial_endpoint "$serial_endpoint"
+export ASTRODRONE_SERIAL_ENDPOINT="$serial_endpoint"
+export ASTRODRONE_SERIAL_OWNER_CONFIRMED=1
 export ASTRODRONE_COMMAND_MODE=shadow
 export ASTRODRONE_ALLOW_MAVLINK_WRITES=0
 export ASTRODRONE_ALLOW_VEHICLE_COMMANDS=0
@@ -29,6 +31,9 @@ export ASTRODRONE_ALLOW_TELEMETRY_CONFIGURATION=0
 mkdir -p "$LOG_DIR"
 run_log="$LOG_DIR/shadow-real_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$run_log"
+export CAMERA_FRAME_READY_FILE="$run_log/camera_frame_ready"
+export CAMERA_SOURCE_READY_FILE="$run_log/camera_source_ready"
+export YOLO_HTTP_ENDPOINT="http://127.0.0.1:8002"
 audit_report="$run_log/command_audit.json"
 control_events="$run_log/control_events.jsonl"
 write_zero_command_audit "$audit_report" shadow-real
@@ -47,27 +52,31 @@ trap cleanup EXIT INT TERM
 
 export GCS_VIDEO_ENABLED="${GCS_VIDEO_ENABLED:-1}"
 export GCS_VIDEO_ANNOTATED="${GCS_VIDEO_ANNOTATED:-0}"
+printf '[정보] TensorRT 엔진=%s\n' "$YOLO_ENGINE_PATH" | tee -a "$run_log/launcher.log"
 "$YOLO_DIR/cpp/run_yolo_live.sh" \
   --frame-source jetson \
   --onnx "$YOLO_ONNX_PATH" \
   --engine "$YOLO_ENGINE_PATH" \
-  >"$run_log/yolo.stdout.log" 2>"$run_log/yolo.stderr.log" &
+  </dev/null >"$run_log/yolo.stdout.log" 2>"$run_log/yolo.stderr.log" &
 yolo_pid=$!
+export YOLO_PROCESS_PID="$yolo_pid"
 if ! wait_http_port 8002 90; then
   printf '[실패] Jetson YOLO HTTP 준비 실패\n[로그] %s\n' "$run_log" >&2
   exit 1
 fi
 
 GCS_VIDEO_ENABLED="${GCS_VIDEO_ENABLED:-1}" \
-MAVPROXY_GCS_TELEMETRY_ENDPOINT="${MAVPROXY_GCS_TELEMETRY_ENDPOINT:-udp:127.0.0.1:14553}" \
+ASTRODRONE_GCS_TELEMETRY_ENDPOINT="${GCS_TELEMETRY_ENDPOINT:-udp:127.0.0.1:14553}" \
   "$REPO_ROOT/gcs/run_publisher.sh" \
-  >"$run_log/telemetry-publisher.log" 2>&1 &
+  </dev/null >"$run_log/telemetry-publisher.log" 2>&1 &
 publisher_pid=$!
 
 export LOG_DIR="$run_log"
+export AUTONOMY_DETAIL_LOG="$run_log/autonomy.log"
 export DRONE_PROFILE=real
 export MAVLINK_AUDIT_EVENT_FILE="$control_events"
-"$SCRIPT_DIR/autonomy-cpp" --profile real >"$run_log/autonomy.log" 2>&1 &
+"$SCRIPT_DIR/autonomy-cpp" --profile real \
+  </dev/null > >(tee -a "$run_log/autonomy.log") 2>&1 &
 autonomy_pid=$!
 timed_out=0
 if ! timeout --foreground "$duration" tail --pid="$autonomy_pid" -f /dev/null; then
@@ -106,7 +115,7 @@ report_path.write_text(json.dumps({
     "vehicle_affecting_command_count": sent,
     "direct_serial_write_count": 0,
     "set_message_interval_count": interval,
-    "source": "CommandGate/CommandAuditLogger",
+    "source": "SafetyMonitor/CommandAuditLogger",
 }, ensure_ascii=False) + "\n", encoding="utf-8")
 if sent or interval:
     raise SystemExit(1)

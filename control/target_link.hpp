@@ -8,14 +8,10 @@
 // sent as-is - no wire encoding needed, this never leaves localhost.
 struct TargetRangeMsg {
     uint32_t seq = 0;
-    uint8_t valid = 0;  // altitude AND a fresh YOLO reading were both available this cycle
+    uint8_t valid = 0;  // App-enriched observation with fresh altitude and valid range
     uint8_t found = 0;  // a target is currently detected (subset of valid)
-    // A fresh ALTITUDE reading from the flight controller arrived within
-    // target_track.altitude_stale_ms - independent of `found`/`valid` above,
-    // which also require a target detection. altitude_m below holds the
-    // last known reading either way (for logging), but only trust it as
-    // current when this is 1: target_distance.cpp does NOT zero it out or
-    // stop sending on a stale reading, it just stops asserting freshness.
+    // Filled by FlightMissionApp from AutopilotState. target-distance only
+    // publishes the YOLO pixel observation and never opens MAVLink.
     uint8_t altitude_valid = 0;
     float x_px = 0;     // target offset from image center, +right (setting/cam_sets.yaml coord_origin)
     float y_px = 0;     // target offset from image center, +up
@@ -39,7 +35,7 @@ struct TargetRangeMsg {
     float bbox_width_px = 0;
     float bbox_height_px = 0;
     float target_confidence = -1;
-    uint8_t confirmed = 0;  // YOLO confirmation state, additive metadata
+    uint8_t confirmed = 0;  // Deprecated compatibility metadata; not a handoff gate
     uint64_t frame_sequence = 0;
     int64_t frame_timestamp_ns = -1;
     char class_name[32] = {};
@@ -82,7 +78,7 @@ private:
 };
 
 // Local, non-MAVLink command metadata. control publishes the setpoint it has
-// computed after CommandGate evaluation so the GCS telemetry publisher can
+// computed after SafetyMonitor evaluation so the GCS telemetry publisher can
 // display it without opening the command endpoint or decoding control logs.
 struct GcsCommandStateMsg {
     uint32_t seq = 0;

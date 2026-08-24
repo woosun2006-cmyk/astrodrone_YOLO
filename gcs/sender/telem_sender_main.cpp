@@ -1,10 +1,10 @@
 // Read-only onboard telemetry publisher.
 //
-// The external MAVLink router owns Pixhawk serial. This process subscribes to
-// its loopback UDP telemetry output, builds a small JSON snapshot, and sends
-// that snapshot to the laptop using the existing FEC transport. It never
-// calls MavConnection::send(), requests message intervals, or opens a serial
-// device.
+// The onboard AutopilotMavlinkAdapter owns Pixhawk serial. This process
+// subscribes to its loopback UDP telemetry fan-out, builds a small JSON
+// snapshot, and sends that snapshot to the laptop using the existing FEC
+// transport. It never calls MavConnection::send(), requests message
+// intervals, or opens a serial device.
 
 #include <unistd.h>
 #include <limits.h>
@@ -105,7 +105,10 @@ bool is_loopback_udp(const std::string& endpoint) {
 
 Args parse_args(int argc, char** argv) {
     Args args;
-    const char* env_endpoint = std::getenv("MAVPROXY_TELEMETRY_ENDPOINT");
+    const char* env_endpoint = std::getenv("ASTRODRONE_GCS_TELEMETRY_ENDPOINT");
+    if (env_endpoint == nullptr || *env_endpoint == '\0') {
+        env_endpoint = std::getenv("ASTRODRONE_TELEMETRY_ENDPOINT");
+    }
     args.telemetry_endpoint = env_endpoint && *env_endpoint
                                   ? env_endpoint
                                   : "udp:127.0.0.1:14551";
@@ -331,7 +334,7 @@ int main(int argc, char** argv) {
         const uint8_t group_size = static_cast<uint8_t>(telem.get_long_or("group_size", 4));
         const int rate_hz = static_cast<int>(telem.get_long_or("rate_hz", 6));
         const int target_udp_port = static_cast<int>(
-            telem.get_long_or("target_udp_port", 15020));
+            telem.get_long_or("target_udp_port", 15022));
 
         auto mav = open_connection(args.telemetry_endpoint);
         gcs::UdpSender udp(dest_host, dest_port);
@@ -351,6 +354,9 @@ int main(int argc, char** argv) {
 
         std::cout << "telem_sender: UDP telemetry=" << args.telemetry_endpoint
                   << " destination=" << dest_host << ":" << dest_port
+                  << " target=127.0.0.1:" << target_udp_port
+                  << " command_state=127.0.0.1:"
+                  << telem.get_long_or("command_state_udp_port", 15021)
                   << " rate=" << rate_hz << "Hz (read-only)" << std::endl;
         while (!g_stop && (args.duration_sec <= 0.0 ||
                            std::chrono::duration<double>(Clock::now() - start).count() < args.duration_sec)) {

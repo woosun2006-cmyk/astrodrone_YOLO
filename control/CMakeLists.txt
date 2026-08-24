@@ -14,29 +14,39 @@ add_compile_options(-Wall -Wextra)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
 add_library(drone_lib STATIC
-    autopilot/runtime_transport.cpp
-    autopilot/real_flight_guard.cpp
+    autopilot/autopilot_mavlink_adapter.cpp
+    app/preflight_readiness.cpp
+    app/flight_phase.cpp
+    app/runtime_config.cpp
     drone_lib.cpp
     logging/command_audit_logger.cpp
     mav_transport.cpp
-    safety/control_authority.cpp
-    safety/flight_state.cpp
-    safety/health_monitor.cpp
-    safety/preflight_gate.cpp
+    safety/safety_monitor.cpp
     yaml_settings.cpp
     target_link.cpp
     pos_calculator.cpp
-    mission/pixel_guidance.cpp
-    mission/diagonal_approach_guidance.cpp
+    mission/centered_vertical_descent_algorithm.cpp
+    mission/diagonal_approach_algorithm.cpp
+    mission/mission_setup.cpp
 )
 target_include_directories(drone_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 add_library(target_json STATIC target_json.cpp)
 target_include_directories(target_json PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
+add_library(target_distance_support STATIC
+    yaml_settings.cpp
+    target_link.cpp
+    pos_calculator.cpp
+)
+target_include_directories(target_distance_support PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
 find_package(Threads REQUIRED)
 
-add_executable(control control.cpp)
+add_executable(control
+    app/main.cpp
+    app/flight_mission_app.cpp
+)
 target_link_libraries(control PRIVATE drone_lib Threads::Threads)
 
 add_executable(check_link check_link.cpp)
@@ -54,8 +64,11 @@ target_link_libraries(check_alt PRIVATE drone_lib Threads::Threads)
 add_executable(emergency emergency.cpp)
 target_link_libraries(emergency PRIVATE drone_lib Threads::Threads)
 
+add_executable(health_check tools/health_check.cpp)
+target_link_libraries(health_check PRIVATE drone_lib Threads::Threads)
+
 add_executable(target_distance target_distance.cpp)
-target_link_libraries(target_distance PRIVATE drone_lib target_json Threads::Threads)
+target_link_libraries(target_distance PRIVATE target_distance_support target_json Threads::Threads)
 
 if(BUILD_TESTS)
     enable_testing()

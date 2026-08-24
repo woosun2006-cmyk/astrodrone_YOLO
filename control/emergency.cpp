@@ -24,7 +24,7 @@
 #include <vector>
 
 #include "drone_lib.hpp"
-#include "autopilot/runtime_transport.hpp"
+#include "app/runtime_config.hpp"
 
 namespace {
 
@@ -72,14 +72,14 @@ int run(int argc, char** argv) {
     YamlValue mav_settings = drone::load_mavlink_settings();
 
     // Read-only monitor - shares the "sensor" proxy port with
-    // target_distance.cpp rather than control.cpp's port, since
+    // target_distance.cpp rather than a vehicle-command port, since
     // mav_transport.cpp's UdpTransport binds its port and two processes
     // can't share one without stealing each other's packets (see
     // setting/port.yaml).
     YamlValue ports = drone::load_port_settings();
     Args args;
     args.address = with_port(mav_settings["real"]["proxy_udp"]["address"].as_string(),
-                              ports.get_long_or("mavlink_sensor", 14551));
+                              ports.get_long_or("telemetry_fanout", 14551));
     args.heartbeat_timeout = mav_settings.get_double_or("heartbeat_timeout", 20);
     bool allow_telemetry_configuration = true;
 
@@ -134,14 +134,14 @@ int run(int argc, char** argv) {
     const bool runtime_selected = std::getenv("ASTRODRONE_TARGET") != nullptr ||
                                   std::getenv("DRONE_TARGET") != nullptr;
     if (runtime_selected) {
-        const auto target = autopilot::runtime_target_from_environment();
-        const auto runtime = autopilot::load_runtime_transport(
-            target, autopilot::TransportRole::TelemetrySubscriber);
+        const auto target = app::runtime_target_from_environment();
+        const auto runtime = app::load_runtime_config(
+            target, app::TransportRole::TelemetrySubscriber);
         args.address = runtime.endpoint;
         args.baud = runtime.baud;
         allow_telemetry_configuration = runtime.allow_telemetry_configuration;
     }
-    if (!runtime_selected || autopilot::endpoint_is_serial(args.address)) {
+    if (!runtime_selected || app::endpoint_is_serial(args.address)) {
         throw std::runtime_error(
             "diagnostic requires ASTRODRONE_TARGET=sitl|real and a runtime loopback UDP endpoint; direct serial is disabled");
     }

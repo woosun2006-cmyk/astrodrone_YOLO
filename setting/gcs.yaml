@@ -5,6 +5,8 @@
 telemetry:
   dest_host: 192.168.0.190
   dest_port: 15550   # see setting/port.yaml -> gcs_telem
+  target_udp_port: 15022  # target-distance GCS-only copy; 15020 is FlightMissionApp-only
+  command_state_udp_port: 15021
   lanes: 3            # interleave depth: groups in flight at once
   group_size: 4        # data packets per group before a parity packet fires
-  rate_hz: 10
+  rate_hz: 6

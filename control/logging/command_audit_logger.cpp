@@ -63,7 +63,7 @@ const char* nullable_reason(const std::string& reason) {
 
 void append_authority_snapshot(
     std::ostringstream& event,
-    const safety::ControlAuthority::Snapshot& authority) {
+    const safety::SafetyMonitor::Snapshot& authority) {
     event << ",\"previous_mode\":";
     if (authority.previous_mode) event << *authority.previous_mode;
     else event << "null";
@@ -101,17 +101,17 @@ void CommandAuditLogger::write_event(const std::string& json) {
 }
 
 void CommandAuditLogger::record_decision(
-    const autopilot::CommandDecision& decision,
-    const safety::ControlAuthority::Snapshot& authority) {
+    const safety::CommandDecision& decision,
+    const safety::SafetyMonitor::Snapshot& authority) {
     const EventTime event_time = now();
-    const std::string block_reason = autopilot::gate_block_reason_name(decision.block_reason);
+    const std::string block_reason = safety::gate_block_reason_name(decision.block_reason);
     const char* lock_reason = nullable_reason(decision.control_lock_reason);
 
     std::ostringstream event;
     event << "{\"event\":\"command_decision\",\"source\":\"command_gate\","
           << "\"timestamp\":\"" << event_time.iso << "\",\"timestamp_unix_ms\":"
           << event_time.unix_ms << ",\"command_type\":\""
-          << autopilot::command_type_name(decision.type) << "\",\"allowed\":"
+          << safety::command_type_name(decision.type) << "\",\"allowed\":"
           << (decision.allowed ? "true" : "false") << ",\"sent\":"
           << (decision.sent ? "true" : "false") << ",\"blocked\":"
           << (decision.allowed ? "false" : "true") << ",\"block_reason\":";
@@ -119,6 +119,12 @@ void CommandAuditLogger::record_decision(
         event << "null";
     } else {
         event << "\"" << block_reason << "\"";
+    }
+    event << ",\"mission_operation\":";
+    if (decision.mission_operation_name.empty()) {
+        event << "null";
+    } else {
+        event << "\"" << json_escape(decision.mission_operation_name) << "\"";
     }
     event << ",\"control_lock_reason\":";
     if (lock_reason == nullptr) {
@@ -134,10 +140,10 @@ void CommandAuditLogger::record_decision(
 
 void CommandAuditLogger::record_control_lock(
     const std::string& reason,
-    const safety::ControlAuthority::Snapshot& authority) {
+    const safety::SafetyMonitor::Snapshot& authority) {
     const EventTime event_time = now();
     std::ostringstream event;
-    event << "{\"event\":\"control_lock\",\"source\":\"control_authority\","
+    event << "{\"event\":\"control_lock\",\"source\":\"safety_monitor\","
           << "\"timestamp\":\"" << event_time.iso << "\",\"timestamp_unix_ms\":"
           << event_time.unix_ms << ",\"command_type\":null,\"allowed\":false,"
           << "\"sent\":false,\"blocked\":true,\"block_reason\":\"CONTROL_LOCKED\","
@@ -149,10 +155,10 @@ void CommandAuditLogger::record_control_lock(
 }
 
 void CommandAuditLogger::record_session_started(
-    const safety::ControlAuthority::Snapshot& authority) {
+    const safety::SafetyMonitor::Snapshot& authority) {
     const EventTime event_time = now();
     std::ostringstream event;
-    event << "{\"event\":\"authority_session_started\",\"source\":\"control_authority\","
+    event << "{\"event\":\"authority_session_started\",\"source\":\"safety_monitor\","
           << "\"timestamp\":\"" << event_time.iso << "\",\"timestamp_unix_ms\":"
           << event_time.unix_ms;
     append_authority_snapshot(event, authority);
@@ -160,19 +166,39 @@ void CommandAuditLogger::record_session_started(
     write_event(event.str());
 }
 
-void CommandAuditLogger::record_state_event(const safety::FlightStateEvent& state_event) {
+void CommandAuditLogger::record_phase_event(const app::FlightPhaseEvent& phase_event) {
     const EventTime event_time = now();
     const auto timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                  state_event.timestamp.time_since_epoch())
+                                  phase_event.timestamp.time_since_epoch())
                                   .count();
     std::ostringstream event;
-    event << "{\"event\":\"state_transition\",\"source\":\"control_state_machine\"," 
+    event << "{\"event\":\"state_transition\",\"source\":\"flight_mission_app\","
           << "\"timestamp\":\"" << event_time.iso << "\",\"timestamp_unix_ms\":"
           << event_time.unix_ms << ",\"monotonic_timestamp_ms\":" << timestamp_ms
-          << ",\"sequence\":" << state_event.sequence << ",\"previous\":\""
-          << safety::flight_state_name(state_event.previous) << "\",\"current\":\""
-          << safety::flight_state_name(state_event.current) << "\",\"reason\":\""
-          << json_escape(state_event.reason) << "\"}";
+          << ",\"sequence\":" << phase_event.sequence << ",\"previous\":\""
+          << app::flight_phase_name(phase_event.previous) << "\",\"current\":\""
+          << app::flight_phase_name(phase_event.current) << "\",\"reason\":\""
+          << json_escape(phase_event.reason) << "\"}";
+    write_event(event.str());
+}
+
+void CommandAuditLogger::record_algorithm_state(const std::string& algorithm,
+                                                const std::string& previous_state,
+                                                const std::string& current_state,
+                                                double elapsed_sec, bool tracking,
+                                                double observation_age_ms) {
+    const EventTime event_time = now();
+    std::ostringstream event;
+    event << "{\"event\":\"algorithm_state_transition\",\"source\":\"guidance\",\"timestamp\":\""
+          << event_time.iso
+          << "\",\"timestamp_unix_ms\":" << event_time.unix_ms
+          << ",\"sequence\":" << next_algorithm_sequence_++
+          << ",\"algorithm\":\"" << json_escape(algorithm)
+          << "\",\"previous\":\"" << json_escape(previous_state)
+          << "\",\"current\":\"" << json_escape(current_state)
+          << "\",\"elapsed_sec\":" << elapsed_sec
+          << ",\"tracking\":" << (tracking ? "true" : "false")
+          << ",\"observation_age_ms\":" << observation_age_ms << "}";
     write_event(event.str());
 }
 
