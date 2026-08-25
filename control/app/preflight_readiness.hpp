@@ -39,4 +39,7 @@ VisionReadiness evaluate_vision_readiness(bool yolo_process_alive,
 
 bool http_endpoint_alive(const std::string& endpoint);
 
+bool yolo_ready_marker_valid(const std::string& marker_path,
+                             std::int64_t expected_pid);
+
 }  // namespace app

@@ -31,6 +31,11 @@ add_library(drone_lib STATIC
 )
 target_include_directories(drone_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
+   CMAKE_CXX_COMPILER_VERSION VERSION_LESS 8)
+    target_link_libraries(drone_lib PUBLIC stdc++fs)
+endif()
+
 add_library(target_json STATIC target_json.cpp)
 target_include_directories(target_json PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
@@ -66,6 +71,9 @@ target_link_libraries(emergency PRIVATE drone_lib Threads::Threads)
 
 add_executable(health_check tools/health_check.cpp)
 target_link_libraries(health_check PRIVATE drone_lib Threads::Threads)
+
+add_executable(telemetry_bench app/telemetry_bench.cpp)
+target_link_libraries(telemetry_bench PRIVATE drone_lib Threads::Threads)
 
 add_executable(target_distance target_distance.cpp)
 target_link_libraries(target_distance PRIVATE target_distance_support target_json Threads::Threads)

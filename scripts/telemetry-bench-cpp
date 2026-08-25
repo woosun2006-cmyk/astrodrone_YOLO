@@ -3,15 +3,17 @@ set -euo pipefail
 
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd -P)"
+# shellcheck disable=SC1091
 source "$SCRIPT_DIR/project-env.sh"
 
 command -v cmake >/dev/null 2>&1 || {
-  printf '%s\n' '[health-check-cpp] cmake is required.' >&2
+  printf '%s\n' '[telemetry-bench-cpp] cmake is required.' >&2
   exit 1
 }
 
 mkdir -p -- "$BUILD_DIR"
-if [[ ! -f "$BUILD_DIR/CMakeCache.txt" ]]; then
+if [[ ! -f "$BUILD_DIR/CMakeCache.txt" ||
+      "$CONTROL_DIR/CMakeLists.txt" -nt "$BUILD_DIR/CMakeCache.txt" ]]; then
   cmake_version="$(cmake --version | sed -n '1s/.*version //p')"
   cmake_major="${cmake_version%%.*}"
   cmake_minor="${cmake_version#*.}"
@@ -25,13 +27,13 @@ fi
 
 build_jobs="${CMAKE_BUILD_PARALLEL_LEVEL:-2}"
 if cmake --help 2>/dev/null | grep -q -- '--build <dir>'; then
-  cmake --build "$BUILD_DIR" --target health_check -- -j"$build_jobs"
+  cmake --build "$BUILD_DIR" --target telemetry_bench -- -j"$build_jobs"
 else
-  make -C "$BUILD_DIR" -j"$build_jobs" health_check
+  make -C "$BUILD_DIR" -j"$build_jobs" telemetry_bench
 fi
 
 if [[ "${1:-}" == '--build-only' ]]; then
   exit 0
 fi
 
-exec "$BUILD_DIR/health_check" "$@"
+exec "$BUILD_DIR/telemetry_bench" "$@"

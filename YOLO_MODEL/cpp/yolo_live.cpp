@@ -480,6 +480,30 @@ void write_camera_source_readiness_marker(const std::string& source,
     }
 }
 
+void write_yolo_ready_marker() {
+    const char* marker_path = std::getenv("YOLO_READY_FILE");
+    if (marker_path == nullptr || *marker_path == '\0') return;
+
+    const std::string temporary_path = std::string(marker_path) + ".tmp." +
+                                       std::to_string(static_cast<long long>(::getpid()));
+    std::ofstream marker(temporary_path, std::ios::trunc);
+    if (!marker) return;
+    marker << "ready=1\n"
+           << "pid=" << static_cast<long long>(::getpid()) << '\n'
+           << "start_monotonic_ns=" << monotonic_nanoseconds() << '\n';
+    marker.close();
+    if (::rename(temporary_path.c_str(), marker_path) != 0) {
+        ::unlink(temporary_path.c_str());
+    }
+}
+
+void remove_yolo_ready_marker() {
+    const char* marker_path = std::getenv("YOLO_READY_FILE");
+    if (marker_path != nullptr && *marker_path != '\0') {
+        ::unlink(marker_path);
+    }
+}
+
 void inferer(SharedState& state, YoloTrt& model, ConfState& conf_state,
              const std::vector<std::string>& class_names,
              GazeboAnnotatedPublisher* gazebo_publisher,
@@ -1227,9 +1251,14 @@ int run(int argc, char** argv) {
     std::cout << "streaming. drag conf, or set the seconds and press Record." << std::endl;
     std::cout << "ctrl-c to quit." << std::endl;
 
+    // The marker is published only after the model is loaded, the HTTP server
+    // has bound its port, and all routes (including /target) are registered.
+    write_yolo_ready_marker();
+
     server.serve_forever();
 
     std::cout << "\nstopping..." << std::endl;
+    remove_yolo_ready_marker();
     g_stopping.store(true);
     state.cap_cv.notify_all();
     state.frame_cv.notify_all();

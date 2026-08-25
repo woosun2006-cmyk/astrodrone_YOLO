@@ -48,3 +48,14 @@ write_zero_command_audit() {
   printf '{"profile":"%s","vehicle_affecting_command_count":0,"decision_count":0,"blocked_command_count":0,"direct_serial_write_count":0,"set_message_interval_count":0,"source":"read-only-policy"}\n' \
     "$profile" >"$report"
 }
+
+resolve_observe_duration() {
+  local requested_duration="$1"
+  local duration_was_explicit="$2"
+  local bench_mode="$3"
+  if (( bench_mode == 1 && duration_was_explicit == 0 )); then
+    printf '0\n'
+  else
+    printf '%s\n' "$requested_duration"
+  fi
+}

@@ -3,12 +3,23 @@
 #include <chrono>
 #include <ctime>
 #include <cstdlib>
-#include <filesystem>
 #include <iomanip>
 #include <sstream>
 
+#if __has_include(<filesystem>)
+#include <filesystem>
+#else
+#include <experimental/filesystem>
+#endif
+
 namespace logging {
 namespace {
+
+#if __has_include(<filesystem>)
+namespace fs = std::filesystem;
+#else
+namespace fs = std::experimental::filesystem;
+#endif
 
 struct EventTime {
     long long unix_ms;
@@ -86,9 +97,9 @@ CommandAuditLogger::CommandAuditLogger() {
     if (path == nullptr || *path == '\0') return;
 
     std::error_code error;
-    const std::filesystem::path event_path(path);
+    const fs::path event_path(path);
     if (!event_path.parent_path().empty()) {
-        std::filesystem::create_directories(event_path.parent_path(), error);
+        fs::create_directories(event_path.parent_path(), error);
     }
     output_.open(event_path, std::ios::out | std::ios::app);
 }

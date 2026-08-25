@@ -22,6 +22,7 @@ fi
 # Do not reuse a CMake cache created by another checkout. This repository can
 # be built from WSL or a Jetson clone, so the cache must belong to this source.
 BUILD_DIR=${YOLO_LIVE_BUILD_DIR:-"$LAUNCHER_DIR/build-repo"}
+SOURCE_DIR="$LAUNCHER_DIR"
 ONNX_PATH=${YOLO_ONNX_PATH:-"$LAUNCHER_DIR/../best_v5.onnx"}
 ENGINE_PATH=""
 if [ -n "${YOLO_ENGINE_PATH:-}" ]; then
@@ -53,11 +54,26 @@ for ((i = 0; i < ${#RUN_ARGS[@]}; i++)); do
 done
 
 mkdir -p "$BUILD_DIR"
-cd "$BUILD_DIR"
 if [ ! -f "$BUILD_DIR/CMakeCache.txt" ] || [ "${YOLO_FORCE_CONFIGURE:-0}" = 1 ]; then
-    cmake -S "$LAUNCHER_DIR" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=RelWithDebInfo >/dev/null
+    cmake_version=$(cmake --version | sed -n '1s/.*version //p')
+    cmake_major=${cmake_version%%.*}
+    cmake_minor=${cmake_version#*.}
+    cmake_minor=${cmake_minor%%.*}
+    if [ "$cmake_major" -gt 3 ] || { [ "$cmake_major" -eq 3 ] && [ "$cmake_minor" -ge 13 ]; }; then
+        cmake -S "$SOURCE_DIR" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=RelWithDebInfo >/dev/null
+    else
+        (cd "$BUILD_DIR" && cmake "$SOURCE_DIR" -DCMAKE_BUILD_TYPE=RelWithDebInfo >/dev/null)
+    fi
 fi
-cmake --build "$BUILD_DIR" --parallel "${YOLO_BUILD_JOBS:-$(nproc)}"
+
+build_jobs=${YOLO_BUILD_JOBS:-$(nproc)}
+if cmake --help 2>/dev/null | grep -q -- '--build <dir>'; then
+    cmake --build "$BUILD_DIR" -- -j"$build_jobs"
+else
+    make -C "$BUILD_DIR" -j"$build_jobs"
+fi
+
+cd "$BUILD_DIR"
 
 if [ "${1:-}" = "--build-only" ]; then
     exit 0

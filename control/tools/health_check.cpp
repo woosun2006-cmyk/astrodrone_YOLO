@@ -31,6 +31,7 @@ struct Options {
     int period_ms = 500;
     bool json = false;
     bool terminal_output = false;
+    bool telemetry_bench = false;
 };
 
 struct Freshness {
@@ -162,10 +163,12 @@ Options parse_options(int argc, char** argv) {
             options.json = true;
         } else if (argument == "--health-check-terminal") {
             options.terminal_output = true;
+        } else if (argument == "--telemetry-bench") {
+            options.telemetry_bench = true;
         } else if (argument == "--help" || argument == "-h") {
             std::cout << "Usage: health_check --target sitl|real --connect ENDPOINT "
                          "[--duration-sec SEC] [--period-ms MS] [--json] "
-                         "[--health-check-terminal]\n";
+                         "[--health-check-terminal] [--telemetry-bench]\n";
             std::exit(0);
         } else {
             throw std::runtime_error("unknown option: " + argument);
@@ -267,9 +270,18 @@ void print_text(const Options& options, const autopilot::AutopilotState& state,
               << " (" << freshness_label(mode) << ' ' << age_text(mode) << ")\n";
     std::cout << "  ARMED: " << (state.have_armed ? (state.armed ? "YES" : "NO") : "UNAVAILABLE")
               << " (" << freshness_label(mode) << ' ' << age_text(mode) << ")\n";
-    std::cout << "  GPS: " << freshness_label(gps) << ' ' << age_text(gps)
-              << " fix=" << static_cast<int>(state.fix_type)
-              << " satellites=" << static_cast<int>(state.satellites) << '\n';
+    const bool bench_gps_unavailable = options.telemetry_bench &&
+        (!state.have_gps || state.fix_type < 2 || state.satellites == 0 ||
+         state.satellites == 255);
+    if (bench_gps_unavailable) {
+        std::cout << "  GPS: UNAVAILABLE (no GPS fix) " << age_text(gps)
+                  << " fix=" << static_cast<int>(state.fix_type)
+                  << " satellites=" << static_cast<int>(state.satellites) << '\n';
+    } else {
+        std::cout << "  GPS: " << freshness_label(gps) << ' ' << age_text(gps)
+                  << " fix=" << static_cast<int>(state.fix_type)
+                  << " satellites=" << static_cast<int>(state.satellites) << '\n';
+    }
     std::cout << "  ALTITUDE: " << freshness_label(altitude) << ' ' << age_text(altitude)
               << " relative=" << state.altitude_m << "m\n";
     std::cout << "  LOCAL_NED: " << freshness_label(local) << ' ' << age_text(local)
@@ -389,6 +401,9 @@ void print_summary(const Counters& counters, bool json) {
 int main(int argc, char** argv) {
     try {
         const Options options = parse_options(argc, argv);
+        if (options.telemetry_bench) {
+            std::cout << "[BENCH] read-only telemetry bench; flight disabled\n";
+        }
         app::RuntimeConfig config{};
         config.target = options.target;
         config.role = app::TransportRole::TelemetrySubscriber;

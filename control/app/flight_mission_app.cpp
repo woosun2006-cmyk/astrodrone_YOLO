@@ -350,12 +350,21 @@ void wait_for_preflight(
         latest_camera = app::read_camera_frame_readiness(
             camera_marker_path, Clock::now(), camera_stale_timeout_sec);
         latest_http_alive = app::http_endpoint_alive(yolo_endpoint);
-        const bool yolo_marker_present = !yolo_ready_marker_path.empty() &&
-                                          ::access(yolo_ready_marker_path.c_str(), F_OK) == 0;
+        std::int64_t yolo_pid = -1;
+        if (const char* value = std::getenv("YOLO_PROCESS_PID")) {
+            try {
+                yolo_pid = std::stoll(value);
+            } catch (...) {
+                yolo_pid = -1;
+            }
+        }
+        const bool yolo_process_alive = process_alive_from_environment("YOLO_PROCESS_PID");
+        const bool yolo_marker_present =
+            yolo_process_alive && app::yolo_ready_marker_valid(yolo_ready_marker_path, yolo_pid);
         const bool camera_source_ready = !camera_source_marker_path.empty() &&
                                          ::access(camera_source_marker_path.c_str(), F_OK) == 0;
         latest_vision = app::evaluate_vision_readiness(
-            process_alive_from_environment("YOLO_PROCESS_PID"), latest_http_alive,
+            yolo_process_alive, latest_http_alive,
             yolo_marker_present,
             camera_source_ready,
             latest_camera);
@@ -2314,12 +2323,21 @@ int FlightMissionApp::run() {
             std::getenv("CAMERA_SOURCE_READY_FILE") != nullptr
                 ? std::getenv("CAMERA_SOURCE_READY_FILE")
                 : "";
-        const bool yolo_marker_present = !yolo_ready_marker_path.empty() &&
-                                          ::access(yolo_ready_marker_path.c_str(), F_OK) == 0;
+        std::int64_t yolo_pid = -1;
+        if (const char* value = std::getenv("YOLO_PROCESS_PID")) {
+            try {
+                yolo_pid = std::stoll(value);
+            } catch (...) {
+                yolo_pid = -1;
+            }
+        }
+        const bool yolo_process_alive = process_alive_from_environment("YOLO_PROCESS_PID");
+        const bool yolo_marker_present =
+            yolo_process_alive && app::yolo_ready_marker_valid(yolo_ready_marker_path, yolo_pid);
         const bool camera_source_ready = !camera_source_marker_path.empty() &&
                                          ::access(camera_source_marker_path.c_str(), F_OK) == 0;
         const auto latest_vision = app::evaluate_vision_readiness(
-            process_alive_from_environment("YOLO_PROCESS_PID"), latest_http_alive,
+            yolo_process_alive, latest_http_alive,
             yolo_marker_present,
             camera_source_ready,
             latest_camera);

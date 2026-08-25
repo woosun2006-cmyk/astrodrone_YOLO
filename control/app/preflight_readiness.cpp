@@ -144,4 +144,23 @@ bool http_endpoint_alive(const std::string& endpoint) {
     return alive;
 }
 
+bool yolo_ready_marker_valid(const std::string& marker_path,
+                             std::int64_t expected_pid) {
+    if (marker_path.empty() || expected_pid <= 0) return false;
+    const auto values = read_key_values(marker_path);
+    const auto ready = values.find("ready");
+    const auto pid = values.find("pid");
+    const auto start = values.find("start_monotonic_ns");
+    if (ready == values.end() || pid == values.end() || start == values.end() ||
+        ready->second != "1") {
+        return false;
+    }
+    try {
+        return std::stoll(pid->second) == expected_pid &&
+               std::stoll(start->second) > 0;
+    } catch (...) {
+        return false;
+    }
+}
+
 }  // namespace app

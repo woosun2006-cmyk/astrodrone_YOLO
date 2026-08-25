@@ -31,12 +31,20 @@ fi
 [[ -f "$SETTING_DIR/MAVLink.yaml" ]] || { printf 'missing settings: %s/MAVLink.yaml\n' "$SETTING_DIR" >&2; exit 1; }
 command -v g++ >/dev/null 2>&1 || { printf '%s\n' 'g++ is required; install with: sudo apt install build-essential' >&2; exit 1; }
 
+gxx_major="$(g++ -dumpversion | cut -d. -f1)"
+filesystem_link_flags=()
+if [[ "$gxx_major" =~ ^[0-9]+$ ]] && (( gxx_major < 8 )); then
+  filesystem_link_flags=(-lstdc++fs)
+fi
+
 mkdir -p -- "$BUILD_DIR"
 control_binary="$BUILD_DIR/control"
 needs_build=0
 if [[ ! -x "$control_binary" ]]; then
   needs_build=1
-elif find "$CONTROL_DIR" "$SETTING_DIR/MAVLink.yaml" -type f -newer "$control_binary" -print -quit | grep -q .; then
+elif find "$CONTROL_DIR" "$SETTING_DIR/MAVLink.yaml" -type f \
+    ! -path "$CONTROL_DIR/app/telemetry_bench.cpp" \
+    -newer "$control_binary" -print -quit | grep -q .; then
   needs_build=1
 fi
 
@@ -58,6 +66,7 @@ if (( needs_build == 1 )); then
     "$CONTROL_DIR/mission/centered_vertical_descent_algorithm.cpp" \
     "$CONTROL_DIR/mission/diagonal_approach_algorithm.cpp" \
     "$CONTROL_DIR/mission/mission_setup.cpp" \
+    "${filesystem_link_flags[@]}" \
     -pthread \
     -o "$control_binary"
 else

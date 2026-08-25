@@ -18,6 +18,12 @@ done
 [[ -f "$SETTING_DIR/MAVLink.yaml" ]] || { printf 'missing settings: %s/MAVLink.yaml\n' "$SETTING_DIR" >&2; exit 1; }
 command -v g++ >/dev/null 2>&1 || { printf '%s\n' 'g++ is required; install with: sudo apt install build-essential' >&2; exit 1; }
 
+gxx_major="$(g++ -dumpversion | cut -d. -f1)"
+filesystem_link_flags=()
+if [[ "$gxx_major" =~ ^[0-9]+$ ]] && (( gxx_major < 8 )); then
+  filesystem_link_flags=(-lstdc++fs)
+fi
+
 mkdir -p -- "$BUILD_DIR"
 target_binary="$BUILD_DIR/target_distance"
 needs_build=0
@@ -34,6 +40,7 @@ if (( needs_build == 1 )); then
     "$CONTROL_DIR/target_link.cpp" \
     "$CONTROL_DIR/pos_calculator.cpp" \
     "$CONTROL_DIR/target_json.cpp" \
+    "${filesystem_link_flags[@]}" \
     -pthread \
     -o "$target_binary"
 else
